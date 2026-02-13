@@ -1,0 +1,23 @@
+[package]
+name = "zk_llm_verifier_halo2"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Default build does NOT pull in halo2 dependencies.
+# Enable with: `-p zk_llm_gateway --features halo2`
+# (see gateway/Cargo.toml for how it's wired)
+default = []
+halo2 = ["dep:halo2_proofs"]
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+zk_llm_common = { path = "../common" }
+
+# Optional: real Halo2/Plonk verification.
+# This is intentionally optional because it is heavy and circuit-specific.
+halo2_proofs = { version = "0.3", optional = true }
