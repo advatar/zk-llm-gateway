@@ -8,4 +8,4 @@
 - [completed] Update relay forwarding compatibility if needed for SDK envelope shape.
 - [completed] Build/test workspace and verify gateway crate behavior.
 - [completed] Document validation steps in VALIDATE.md (do not commit).
-- [pending] Commit all work, including existing uncommitted relay edits, per user request.
+- [completed] Commit all work, including existing uncommitted relay edits, per user request.
