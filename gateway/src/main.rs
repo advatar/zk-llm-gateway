@@ -3,23 +3,25 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{Method, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
-use base64::Engine as _;
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use clap::{Parser, ValueEnum};
 use log::{error, info, warn};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use tokio::time::sleep;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use uuid::Uuid;
 
 use zk_llm_common::{
     envelope::{open_request_at_gateway, seal_response_at_gateway, GatewayKeypair},
     types::{ErrorResponse, GatewayEnvelopePayload, InferenceRequest, InferenceResponse},
-    zk::{replay_key, DummyVerifier, ZkVerifier, ZkVerifyError},
+    zk::{replay_key, B64Bytes, DummyVerifier, ZkTicket, ZkVerifier, ZkVerifyError},
 };
 
 use zk_llm_verifier_halo2::{Halo2PlonkVerifier, Halo2PlonkVerifierConfig};
@@ -182,6 +184,9 @@ async fn main() -> Result<()> {
 
     let app = Router::new()
         .route("/healthz", get(healthz))
+        .route("/v1/pubkey", get(pubkey))
+        .route("/v1/models", get(compat_models))
+        .route("/v1/chat/completions", post(compat_chat_completions))
         .route("/v1/infer", post(infer))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -214,6 +219,89 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
+#[derive(Debug, Serialize)]
+struct GatewayPubkeyResponse {
+    public_key_b64: String,
+}
+
+async fn pubkey(State(state): State<Arc<AppState>>) -> Json<GatewayPubkeyResponse> {
+    Json(GatewayPubkeyResponse {
+        public_key_b64: B64.encode(state.keypair.public_bytes()),
+    })
+}
+
+async fn compat_models(State(state): State<Arc<AppState>>) -> Response {
+    compat_proxy(&state, Method::GET, "/v1/models", None).await
+}
+
+async fn compat_chat_completions(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> Response {
+    compat_proxy(&state, Method::POST, "/v1/chat/completions", Some(body)).await
+}
+
+async fn compat_proxy(
+    state: &AppState,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+) -> Response {
+    let mut builder = state
+        .http
+        .request(method, provider_url(&state.provider_base_url, path));
+    if let Some(key) = &state.provider_api_key {
+        builder = builder.bearer_auth(key);
+    }
+    if let Some(body) = body {
+        builder = builder.json(&body);
+    }
+
+    let resp = match builder.send().await {
+        Ok(resp) => resp,
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": {
+                        "code": "upstream_unreachable",
+                        "message": "upstream network error"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let status = resp.status();
+    let bytes = match resp.bytes().await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": {
+                        "code": "upstream_unreachable",
+                        "message": "upstream read error"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    match serde_json::from_slice::<Value>(&bytes) {
+        Ok(value) => (status, Json(value)).into_response(),
+        Err(_) => (
+            status,
+            Json(json!({
+                "raw": String::from_utf8_lossy(&bytes),
+            })),
+        )
+            .into_response(),
+    }
+}
+
 struct AppState {
     keypair: GatewayKeypair,
     verifier: Arc<dyn ZkVerifier>,
@@ -234,11 +322,27 @@ async fn infer(
     Json(env): Json<zk_llm_common::envelope::Envelope>,
 ) -> Result<Json<zk_llm_common::envelope::Envelope>, ApiError> {
     let started = std::time::Instant::now();
-    // Step 1: decrypt + parse. If we can't decrypt, we cannot respond encrypted.
+    // Step 1: decrypt. If we can't decrypt, we cannot respond encrypted.
     let plaintext = open_request_at_gateway(&state.keypair, &env)
         .map_err(|e| ApiError::bad_request(None, "decrypt_failed", format!("{}", e)))?;
 
-    let req: InferenceRequest = serde_json::from_slice(&plaintext)
+    let raw: Value = serde_json::from_slice(&plaintext)
+        .map_err(|e| ApiError::bad_request(None, "invalid_json", format!("{}", e)))?;
+
+    if raw.get("upstream").is_some() {
+        return infer_sdk(state, env, raw, started).await;
+    }
+
+    infer_legacy(state, env, raw, started).await
+}
+
+async fn infer_legacy(
+    state: Arc<AppState>,
+    env: zk_llm_common::envelope::Envelope,
+    raw: Value,
+    started: std::time::Instant,
+) -> Result<Json<zk_llm_common::envelope::Envelope>, ApiError> {
+    let req: InferenceRequest = serde_json::from_value(raw)
         .map_err(|e| ApiError::bad_request(None, "invalid_json", format!("{}", e)))?;
 
     // From here on, we can return encrypted errors.
@@ -345,6 +449,273 @@ async fn infer(
     let payload_json = serde_json::to_vec(&payload)
         .map_err(|e| ApiError::internal(Some(req.request_id), format!("serialize: {}", e)))?;
 
+    finalize_encrypted_response(&state, &env, payload_json, started, Some(req.request_id)).await
+}
+
+#[derive(Debug, Deserialize)]
+struct SdkInferenceRequest {
+    token_class: zk_llm_common::token::TokenClass,
+    ticket: SdkTicket,
+    upstream: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct SdkTicket {
+    nullifier_b64: String,
+    proof_b64: String,
+    #[serde(default)]
+    commitment_root_b64: Option<String>,
+    #[serde(default)]
+    extra: Option<Value>,
+    #[serde(default)]
+    ticket_id: Option<String>,
+}
+
+async fn infer_sdk(
+    state: Arc<AppState>,
+    env: zk_llm_common::envelope::Envelope,
+    raw: Value,
+    started: std::time::Instant,
+) -> Result<Json<zk_llm_common::envelope::Envelope>, ApiError> {
+    let req: SdkInferenceRequest = serde_json::from_value(raw)
+        .map_err(|e| ApiError::bad_request(None, "invalid_json", format!("{}", e)))?;
+    let request_id = Uuid::new_v4();
+
+    // From here on, we can return encrypted errors.
+    let result: Result<Value, EncryptedError> = async {
+        if req.token_class != env.token_class {
+            return Err(EncryptedError::bad_request(
+                request_id,
+                "token_class_mismatch",
+                "request token_class does not match envelope",
+            ));
+        }
+
+        let ticket = sdk_ticket_to_internal(&req.ticket, req.token_class, request_id)?;
+
+        // Verify ticket
+        let _verified = state
+            .verifier
+            .verify(&ticket)
+            .map_err(|e| map_zk_error(request_id, e))?;
+
+        // Replay protection: reserve the nullifier before calling the provider.
+        let rkey = replay_key(&ticket);
+        let pending_val = encode_nullifier_value(b'p', now_ms_u64());
+        reserve_nullifier(
+            &state.nullifier_db,
+            &rkey,
+            &pending_val,
+            state.nullifier_pending_ttl_ms,
+        )
+        .map_err(|e| match e {
+            ReserveError::AlreadyUsed => EncryptedError::payment_required(
+                request_id,
+                "double_spend",
+                "ticket nullifier already used",
+            ),
+            ReserveError::Db => EncryptedError::internal(request_id, "db error"),
+        })?;
+
+        let upstream = match call_provider_upstream(&state, &req.upstream, request_id).await {
+            Ok(o) => o,
+            Err(e) => {
+                // Best-effort: release pending reservation to allow retry.
+                let _ = state.nullifier_db.compare_and_swap(
+                    &rkey,
+                    Some(pending_val.as_slice()),
+                    None as Option<&[u8]>,
+                );
+                return Err(e);
+            }
+        };
+
+        // Mark as spent.
+        let spent_val = encode_nullifier_value(b's', now_ms_u64());
+        let _ = state.nullifier_db.insert(&rkey, spent_val.as_slice());
+
+        Ok(upstream)
+    }
+    .await;
+
+    let payload = match result {
+        Ok(upstream) => json!({ "upstream": upstream }),
+        Err(e) => json!({
+            "error": {
+                "code": e.code,
+                "message": e.message
+            }
+        }),
+    };
+
+    let payload_json = serde_json::to_vec(&payload)
+        .map_err(|e| ApiError::internal(Some(request_id), format!("serialize: {}", e)))?;
+
+    finalize_encrypted_response(&state, &env, payload_json, started, Some(request_id)).await
+}
+
+fn sdk_ticket_to_internal(
+    ticket: &SdkTicket,
+    token_class: zk_llm_common::token::TokenClass,
+    request_id: Uuid,
+) -> Result<ZkTicket, EncryptedError> {
+    // Reserved for future verifier-specific metadata.
+    let _ = (&ticket.extra, &ticket.ticket_id);
+
+    let nullifier = B64
+        .decode(ticket.nullifier_b64.trim())
+        .map_err(|_| EncryptedError::bad_request(request_id, "invalid_ticket", "invalid ticket"))?;
+    if nullifier.is_empty() {
+        return Err(EncryptedError::payment_required(
+            request_id,
+            "invalid_proof",
+            "invalid usage proof",
+        ));
+    }
+
+    let mut proof = B64
+        .decode(ticket.proof_b64.trim())
+        .map_err(|_| EncryptedError::bad_request(request_id, "invalid_ticket", "invalid ticket"))?;
+    // SDK dummy tickets currently encode an empty proof. Accept in dev paths by normalizing.
+    if proof.is_empty() {
+        proof.push(0);
+    }
+
+    let commitment_root = match &ticket.commitment_root_b64 {
+        Some(root) => B64.decode(root.trim()).map_err(|_| {
+            EncryptedError::bad_request(request_id, "invalid_ticket", "invalid ticket")
+        })?,
+        None => vec![0u8; 32],
+    };
+
+    Ok(ZkTicket {
+        commitment_root: B64Bytes(commitment_root),
+        nullifier: B64Bytes(nullifier),
+        token_class,
+        proof: B64Bytes(proof),
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct UpstreamProxyRequest {
+    path: String,
+    #[serde(default = "default_post_method")]
+    method: String,
+    #[serde(default)]
+    body: Option<Value>,
+}
+
+fn default_post_method() -> String {
+    "POST".to_string()
+}
+
+async fn call_provider_upstream(
+    state: &AppState,
+    upstream: &Value,
+    request_id: Uuid,
+) -> Result<Value, EncryptedError> {
+    let proxy_req = if upstream.get("path").is_some()
+        || upstream.get("method").is_some()
+        || upstream.get("body").is_some()
+    {
+        serde_json::from_value::<UpstreamProxyRequest>(upstream.clone()).map_err(|_| {
+            EncryptedError::bad_request(
+                request_id,
+                "invalid_upstream_request",
+                "invalid upstream request",
+            )
+        })?
+    } else {
+        UpstreamProxyRequest {
+            path: "/v1/chat/completions".to_string(),
+            method: "POST".to_string(),
+            body: Some(upstream.clone()),
+        }
+    };
+
+    if !proxy_req.path.starts_with('/') || proxy_req.path.contains("://") {
+        return Err(EncryptedError::bad_request(
+            request_id,
+            "invalid_upstream_path",
+            "invalid upstream path",
+        ));
+    }
+
+    let method = Method::from_bytes(proxy_req.method.as_bytes()).map_err(|_| {
+        EncryptedError::bad_request(
+            request_id,
+            "invalid_upstream_method",
+            "invalid upstream method",
+        )
+    })?;
+    if method != Method::GET && method != Method::POST {
+        return Err(EncryptedError::bad_request(
+            request_id,
+            "unsupported_upstream_method",
+            "unsupported upstream method",
+        ));
+    }
+
+    let mut builder = state.http.request(
+        method.clone(),
+        provider_url(&state.provider_base_url, &proxy_req.path),
+    );
+    if let Some(key) = &state.provider_api_key {
+        builder = builder.bearer_auth(key);
+    }
+    if method == Method::GET {
+        if proxy_req.body.is_some() {
+            return Err(EncryptedError::bad_request(
+                request_id,
+                "invalid_upstream_request",
+                "GET upstream requests must not include a body",
+            ));
+        }
+    } else if let Some(body) = &proxy_req.body {
+        builder = builder.json(body);
+    }
+
+    let resp = builder.send().await.map_err(|_e| {
+        EncryptedError::upstream(request_id, "upstream_network", "upstream network error")
+    })?;
+
+    let status = resp.status();
+    let bytes = resp.bytes().await.map_err(|_e| {
+        EncryptedError::upstream(request_id, "upstream_read", "upstream read error")
+    })?;
+
+    if !status.is_success() {
+        warn!(
+            "upstream proxy error status={} request_id={} body_len={}",
+            status,
+            request_id,
+            bytes.len()
+        );
+        return Err(EncryptedError::upstream(
+            request_id,
+            "upstream_error",
+            "upstream returned error",
+        ));
+    }
+
+    let body = match serde_json::from_slice::<Value>(&bytes) {
+        Ok(v) => v,
+        Err(_) => Value::String(String::from_utf8_lossy(&bytes).to_string()),
+    };
+
+    Ok(json!({
+        "status": status.as_u16(),
+        "body": body
+    }))
+}
+
+async fn finalize_encrypted_response(
+    state: &AppState,
+    req_env: &zk_llm_common::envelope::Envelope,
+    payload_json: Vec<u8>,
+    started: std::time::Instant,
+    request_id: Option<Uuid>,
+) -> Result<Json<zk_llm_common::envelope::Envelope>, ApiError> {
     // Best-effort timing padding (does not affect provider, only relay / network observers)
     if state.privacy_min_response_delay_ms > 0 {
         let elapsed = started.elapsed();
@@ -360,10 +731,18 @@ async fn infer(
         sleep(Duration::from_millis(delay)).await;
     }
 
-    let resp_env = seal_response_at_gateway(&state.keypair, &env, &payload_json)
-        .map_err(|e| ApiError::internal(Some(req.request_id), format!("encrypt: {}", e)))?;
+    let resp_env = seal_response_at_gateway(&state.keypair, req_env, &payload_json)
+        .map_err(|e| ApiError::internal(request_id, format!("encrypt: {}", e)))?;
 
     Ok(Json(resp_env))
+}
+
+fn provider_url(base: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
 }
 
 #[derive(Debug)]

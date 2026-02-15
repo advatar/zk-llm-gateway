@@ -10,6 +10,7 @@ use axum::{
 };
 use clap::Parser;
 use log::{info, warn};
+use serde_json::{json, Value};
 use tokio::time::timeout;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
@@ -53,6 +54,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/", get(docs))
         .route("/docs", get(docs))
+        .route("/openapi.json", get(openapi_json))
         .route("/healthz", get(healthz))
         .route("/relay", post(relay))
         .layer(CorsLayer::permissive())
@@ -130,6 +132,7 @@ async fn docs() -> Html<&'static str> {
       <li><code>GET /healthz</code> - Liveness check</li>
       <li><code>POST /relay</code> - Forward encrypted envelope to gateway</li>
       <li><code>GET /docs</code> - This page</li>
+      <li><code>GET /openapi.json</code> - OpenAPI document</li>
     </ul>
 
     <h2>Health Check</h2>
@@ -139,18 +142,147 @@ async fn docs() -> Html<&'static str> {
     <p>Submit a JSON <code>Envelope</code> payload from the client.</p>
     <pre>curl -sS https://proxy.zerok.cloud/relay \
   -H "content-type: application/json" \
-  -d '{"version":1,"token_class":"c256","kem_pub_b64":"...","nonce_b64":"...","ciphertext_b64":"..."}'</pre>
+  -d '{"v":1,"token_class":"c256","eph_pubkey_b64":"...","nonce_b64":"...","ciphertext_b64":"..."}'</pre>
 
     <h2>Notes</h2>
     <ul>
       <li>The relay cannot decrypt payload contents.</li>
       <li>The client needs <code>GATEWAY_PUBLIC_KEY_B64</code> from the gateway operator.</li>
+      <li>Machine-readable spec: <a href="/openapi.json">/openapi.json</a></li>
       <li>See the workspace README for full setup and client usage details.</li>
     </ul>
   </main>
 </body>
 </html>"#,
     )
+}
+
+async fn openapi_json() -> Json<Value> {
+    Json(json!({
+        "openapi": "3.1.0",
+        "info": {
+            "title": "ZK LLM Relay API",
+            "version": "1.0.0",
+            "description": "Privacy relay for forwarding encrypted envelope payloads to the gateway."
+        },
+        "servers": [
+            {
+                "url": "https://proxy.zerok.cloud"
+            }
+        ],
+        "paths": {
+            "/healthz": {
+                "get": {
+                    "summary": "Health check",
+                    "operationId": "healthz",
+                    "responses": {
+                        "200": {
+                            "description": "Relay is healthy",
+                            "content": {
+                                "text/plain": {
+                                    "schema": {
+                                        "type": "string",
+                                        "example": "ok"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/relay": {
+                "post": {
+                    "summary": "Forward encrypted envelope",
+                    "operationId": "relayEnvelope",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Envelope"
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Encrypted envelope response from gateway",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/Envelope"
+                                    }
+                                }
+                            }
+                        },
+                        "502": {
+                            "description": "Gateway unreachable or returned error",
+                            "content": {
+                                "text/plain": {
+                                    "schema": {
+                                        "type": "string",
+                                        "examples": {
+                                            "gateway_unreachable": {
+                                                "value": "gateway unreachable"
+                                            },
+                                            "gateway_error": {
+                                                "value": "gateway error"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "504": {
+                            "description": "Gateway timeout",
+                            "content": {
+                                "text/plain": {
+                                    "schema": {
+                                        "type": "string",
+                                        "example": "gateway timeout"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "components": {
+            "schemas": {
+                "TokenClass": {
+                    "type": "string",
+                    "enum": ["c256", "c512", "c1024", "c2048", "c4096"]
+                },
+                "Envelope": {
+                    "type": "object",
+                    "required": ["v", "token_class", "eph_pubkey_b64", "nonce_b64", "ciphertext_b64"],
+                    "properties": {
+                        "v": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "example": 1
+                        },
+                        "token_class": {
+                            "$ref": "#/components/schemas/TokenClass"
+                        },
+                        "eph_pubkey_b64": {
+                            "type": "string",
+                            "description": "Base64-encoded client ephemeral public key"
+                        },
+                        "nonce_b64": {
+                            "type": "string",
+                            "description": "Base64-encoded AEAD nonce"
+                        },
+                        "ciphertext_b64": {
+                            "type": "string",
+                            "description": "Base64-encoded encrypted payload"
+                        }
+                    }
+                }
+            }
+        }
+    }))
 }
 
 struct RelayState {

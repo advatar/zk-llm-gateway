@@ -127,9 +127,18 @@ impl ClientCryptoContext {
 /// The relay sees only ciphertext and cannot read prompts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Envelope {
+    /// Protocol version.
+    ///
+    /// Serialized as `v` for SDK compatibility.
+    /// Legacy input alias: `version`.
+    #[serde(rename = "v", alias = "version")]
     pub version: u8,
     pub token_class: TokenClass,
     /// Base64-encoded client ephemeral public key.
+    ///
+    /// Serialized as `eph_pubkey_b64` for SDK compatibility.
+    /// Legacy input alias: `kem_pub_b64`.
+    #[serde(rename = "eph_pubkey_b64", alias = "kem_pub_b64")]
     pub kem_pub_b64: String,
     /// Base64-encoded AEAD nonce.
     pub nonce_b64: String,

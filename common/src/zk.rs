@@ -72,7 +72,7 @@ pub struct DummyVerifier;
 
 impl ZkVerifier for DummyVerifier {
     fn verify(&self, ticket: &ZkTicket) -> std::result::Result<VerifiedTicket, ZkVerifyError> {
-        if ticket.proof.0.is_empty() || ticket.nullifier.0.is_empty() {
+        if ticket.nullifier.0.is_empty() {
             return Err(ZkVerifyError::InvalidProof);
         }
         // For dev mode, treat the nullifier itself as the replay key.
@@ -134,9 +134,6 @@ mod tests {
     #[test]
     fn dummy_verifier_rejects_empty_fields() {
         let verifier = DummyVerifier;
-        let empty_proof = make_ticket(TokenClass::C256, vec![1u8], vec![]);
-        assert!(verifier.verify(&empty_proof).is_err());
-
         let empty_nullifier = make_ticket(TokenClass::C256, vec![], vec![1u8]);
         assert!(verifier.verify(&empty_nullifier).is_err());
     }

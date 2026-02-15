@@ -114,6 +114,14 @@ export HALO2_VK_PATH="./path/to/verifying.key"
 cargo run -p zk_llm_gateway --features halo2 -- --zk-verifier halo2
 ```
 
+Gateway endpoints:
+
+- `GET  /healthz`
+- `GET  /v1/pubkey` (returns `{"public_key_b64":"..."}`)
+- `POST /v1/infer` (encrypted envelope endpoint)
+- `POST /v1/chat/completions` (OpenAI-compatible pass-through)
+- `GET  /v1/models` (OpenAI-compatible pass-through)
+
 ### 4) Run the relay (optional but recommended)
 
 ```bash
@@ -226,4 +234,3 @@ export LOCAL_SUMMARIZER_MODEL="llama-3.1-8b"
 3. Add better **local summarization** / **RAG** in the client (local model)
 4. Add padding strategies for inference metadata (token budget classes, optional minimum response times)
 5. Consider TEEs/confidential inference if you want to reduce trust in gateway/provider infrastructure
-
