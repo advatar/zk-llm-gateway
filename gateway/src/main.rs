@@ -21,7 +21,7 @@ use uuid::Uuid;
 use zk_llm_common::{
     envelope::{open_request_at_gateway, seal_response_at_gateway, GatewayKeypair},
     types::{ErrorResponse, GatewayEnvelopePayload, InferenceRequest, InferenceResponse},
-    zk::{replay_key, B64Bytes, DummyVerifier, ZkTicket, ZkVerifier, ZkVerifyError},
+    zk::{replay_key, DummyVerifier, ZkVerifier, ZkVerifyError},
 };
 
 use zk_llm_verifier_halo2::{Halo2PlonkVerifier, Halo2PlonkVerifierConfig};
@@ -326,25 +326,18 @@ async fn infer(
     let plaintext = open_request_at_gateway(&state.keypair, &env)
         .map_err(|e| ApiError::bad_request(None, "decrypt_failed", format!("{}", e)))?;
 
-    let raw: Value = serde_json::from_slice(&plaintext)
+    let req: InferenceRequest = serde_json::from_slice(&plaintext)
         .map_err(|e| ApiError::bad_request(None, "invalid_json", format!("{}", e)))?;
 
-    if raw.get("upstream").is_some() {
-        return infer_sdk(state, env, raw, started).await;
-    }
-
-    infer_legacy(state, env, raw, started).await
+    infer_canonical(state, env, req, started).await
 }
 
-async fn infer_legacy(
+async fn infer_canonical(
     state: Arc<AppState>,
     env: zk_llm_common::envelope::Envelope,
-    raw: Value,
+    req: InferenceRequest,
     started: std::time::Instant,
 ) -> Result<Json<zk_llm_common::envelope::Envelope>, ApiError> {
-    let req: InferenceRequest = serde_json::from_value(raw)
-        .map_err(|e| ApiError::bad_request(None, "invalid_json", format!("{}", e)))?;
-
     // From here on, we can return encrypted errors.
     let result: Result<String, EncryptedError> = async {
         // Consistency checks to reduce cross-protocol confusion
@@ -450,263 +443,6 @@ async fn infer_legacy(
         .map_err(|e| ApiError::internal(Some(req.request_id), format!("serialize: {}", e)))?;
 
     finalize_encrypted_response(&state, &env, payload_json, started, Some(req.request_id)).await
-}
-
-#[derive(Debug, Deserialize)]
-struct SdkInferenceRequest {
-    token_class: zk_llm_common::token::TokenClass,
-    ticket: SdkTicket,
-    upstream: Value,
-}
-
-#[derive(Debug, Deserialize)]
-struct SdkTicket {
-    nullifier_b64: String,
-    proof_b64: String,
-    #[serde(default)]
-    commitment_root_b64: Option<String>,
-    #[serde(default)]
-    extra: Option<Value>,
-    #[serde(default)]
-    ticket_id: Option<String>,
-}
-
-async fn infer_sdk(
-    state: Arc<AppState>,
-    env: zk_llm_common::envelope::Envelope,
-    raw: Value,
-    started: std::time::Instant,
-) -> Result<Json<zk_llm_common::envelope::Envelope>, ApiError> {
-    let req: SdkInferenceRequest = serde_json::from_value(raw)
-        .map_err(|e| ApiError::bad_request(None, "invalid_json", format!("{}", e)))?;
-    let request_id = Uuid::new_v4();
-
-    // From here on, we can return encrypted errors.
-    let result: Result<Value, EncryptedError> = async {
-        if req.token_class != env.token_class {
-            return Err(EncryptedError::bad_request(
-                request_id,
-                "token_class_mismatch",
-                "request token_class does not match envelope",
-            ));
-        }
-
-        let ticket = sdk_ticket_to_internal(&req.ticket, req.token_class, request_id)?;
-
-        // Verify ticket
-        let _verified = state
-            .verifier
-            .verify(&ticket)
-            .map_err(|e| map_zk_error(request_id, e))?;
-
-        // Replay protection: reserve the nullifier before calling the provider.
-        let rkey = replay_key(&ticket);
-        let pending_val = encode_nullifier_value(b'p', now_ms_u64());
-        reserve_nullifier(
-            &state.nullifier_db,
-            &rkey,
-            &pending_val,
-            state.nullifier_pending_ttl_ms,
-        )
-        .map_err(|e| match e {
-            ReserveError::AlreadyUsed => EncryptedError::payment_required(
-                request_id,
-                "double_spend",
-                "ticket nullifier already used",
-            ),
-            ReserveError::Db => EncryptedError::internal(request_id, "db error"),
-        })?;
-
-        let upstream = match call_provider_upstream(&state, &req.upstream, request_id).await {
-            Ok(o) => o,
-            Err(e) => {
-                // Best-effort: release pending reservation to allow retry.
-                let _ = state.nullifier_db.compare_and_swap(
-                    &rkey,
-                    Some(pending_val.as_slice()),
-                    None as Option<&[u8]>,
-                );
-                return Err(e);
-            }
-        };
-
-        // Mark as spent.
-        let spent_val = encode_nullifier_value(b's', now_ms_u64());
-        let _ = state.nullifier_db.insert(&rkey, spent_val.as_slice());
-
-        Ok(upstream)
-    }
-    .await;
-
-    let payload = match result {
-        Ok(upstream) => json!({ "upstream": upstream }),
-        Err(e) => json!({
-            "error": {
-                "code": e.code,
-                "message": e.message
-            }
-        }),
-    };
-
-    let payload_json = serde_json::to_vec(&payload)
-        .map_err(|e| ApiError::internal(Some(request_id), format!("serialize: {}", e)))?;
-
-    finalize_encrypted_response(&state, &env, payload_json, started, Some(request_id)).await
-}
-
-fn sdk_ticket_to_internal(
-    ticket: &SdkTicket,
-    token_class: zk_llm_common::token::TokenClass,
-    request_id: Uuid,
-) -> Result<ZkTicket, EncryptedError> {
-    // Reserved for future verifier-specific metadata.
-    let _ = (&ticket.extra, &ticket.ticket_id);
-
-    let nullifier = B64
-        .decode(ticket.nullifier_b64.trim())
-        .map_err(|_| EncryptedError::bad_request(request_id, "invalid_ticket", "invalid ticket"))?;
-    if nullifier.is_empty() {
-        return Err(EncryptedError::payment_required(
-            request_id,
-            "invalid_proof",
-            "invalid usage proof",
-        ));
-    }
-
-    let mut proof = B64
-        .decode(ticket.proof_b64.trim())
-        .map_err(|_| EncryptedError::bad_request(request_id, "invalid_ticket", "invalid ticket"))?;
-    // SDK dummy tickets currently encode an empty proof. Accept in dev paths by normalizing.
-    if proof.is_empty() {
-        proof.push(0);
-    }
-
-    let commitment_root = match &ticket.commitment_root_b64 {
-        Some(root) => B64.decode(root.trim()).map_err(|_| {
-            EncryptedError::bad_request(request_id, "invalid_ticket", "invalid ticket")
-        })?,
-        None => vec![0u8; 32],
-    };
-
-    Ok(ZkTicket {
-        commitment_root: B64Bytes(commitment_root),
-        nullifier: B64Bytes(nullifier),
-        token_class,
-        proof: B64Bytes(proof),
-    })
-}
-
-#[derive(Debug, Deserialize)]
-struct UpstreamProxyRequest {
-    path: String,
-    #[serde(default = "default_post_method")]
-    method: String,
-    #[serde(default)]
-    body: Option<Value>,
-}
-
-fn default_post_method() -> String {
-    "POST".to_string()
-}
-
-async fn call_provider_upstream(
-    state: &AppState,
-    upstream: &Value,
-    request_id: Uuid,
-) -> Result<Value, EncryptedError> {
-    let proxy_req = if upstream.get("path").is_some()
-        || upstream.get("method").is_some()
-        || upstream.get("body").is_some()
-    {
-        serde_json::from_value::<UpstreamProxyRequest>(upstream.clone()).map_err(|_| {
-            EncryptedError::bad_request(
-                request_id,
-                "invalid_upstream_request",
-                "invalid upstream request",
-            )
-        })?
-    } else {
-        UpstreamProxyRequest {
-            path: "/v1/chat/completions".to_string(),
-            method: "POST".to_string(),
-            body: Some(upstream.clone()),
-        }
-    };
-
-    if !proxy_req.path.starts_with('/') || proxy_req.path.contains("://") {
-        return Err(EncryptedError::bad_request(
-            request_id,
-            "invalid_upstream_path",
-            "invalid upstream path",
-        ));
-    }
-
-    let method = Method::from_bytes(proxy_req.method.as_bytes()).map_err(|_| {
-        EncryptedError::bad_request(
-            request_id,
-            "invalid_upstream_method",
-            "invalid upstream method",
-        )
-    })?;
-    if method != Method::GET && method != Method::POST {
-        return Err(EncryptedError::bad_request(
-            request_id,
-            "unsupported_upstream_method",
-            "unsupported upstream method",
-        ));
-    }
-
-    let mut builder = state.http.request(
-        method.clone(),
-        provider_url(&state.provider_base_url, &proxy_req.path),
-    );
-    if let Some(key) = &state.provider_api_key {
-        builder = builder.bearer_auth(key);
-    }
-    if method == Method::GET {
-        if proxy_req.body.is_some() {
-            return Err(EncryptedError::bad_request(
-                request_id,
-                "invalid_upstream_request",
-                "GET upstream requests must not include a body",
-            ));
-        }
-    } else if let Some(body) = &proxy_req.body {
-        builder = builder.json(body);
-    }
-
-    let resp = builder.send().await.map_err(|_e| {
-        EncryptedError::upstream(request_id, "upstream_network", "upstream network error")
-    })?;
-
-    let status = resp.status();
-    let bytes = resp.bytes().await.map_err(|_e| {
-        EncryptedError::upstream(request_id, "upstream_read", "upstream read error")
-    })?;
-
-    if !status.is_success() {
-        warn!(
-            "upstream proxy error status={} request_id={} body_len={}",
-            status,
-            request_id,
-            bytes.len()
-        );
-        return Err(EncryptedError::upstream(
-            request_id,
-            "upstream_error",
-            "upstream returned error",
-        ));
-    }
-
-    let body = match serde_json::from_slice::<Value>(&bytes) {
-        Ok(v) => v,
-        Err(_) => Value::String(String::from_utf8_lossy(&bytes).to_string()),
-    };
-
-    Ok(json!({
-        "status": status.as_u16(),
-        "body": body
-    }))
 }
 
 async fn finalize_encrypted_response(
