@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -85,14 +85,6 @@ impl AgentManager {
             cfg,
             sessions: RwLock::new(HashMap::new()),
         })
-    }
-
-    pub fn default_session_id(&self) -> &str {
-        &self.cfg.default_session_id
-    }
-
-    pub fn sessions_dir(&self) -> &Path {
-        &self.cfg.sessions_dir
     }
 
     fn validate_session_id(session_id: &str) -> Result<()> {
@@ -251,13 +243,6 @@ impl AgentManager {
         Self::validate_session_id(&session_id)?;
         let mut guard = self.sessions.write().await;
         guard.insert(session_id, Arc::new(Mutex::new(agent)));
-        Ok(())
-    }
-
-    pub async fn set_system_prompt(&self, session_id: &str, system: String) -> Result<()> {
-        let agent = self.get_or_load(session_id).await?;
-        let mut a = agent.lock().await;
-        a.set_system_prompt(system);
         Ok(())
     }
 

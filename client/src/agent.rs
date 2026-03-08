@@ -157,6 +157,7 @@ impl AgentRuntime {
         self.session.messages.push(ChatMessage {
             role: "user".to_string(),
             content: user_msg.clone(),
+            extra: Default::default(),
         });
         self.memory_store
             .add_message(user_index, &self.session.messages[user_index]);
@@ -193,8 +194,10 @@ impl AgentRuntime {
             messages: remote_messages,
             max_tokens: None,
             temperature: None,
+            stream: None,
             token_class: self.token_class,
             ticket,
+            provider_options: Default::default(),
         };
 
         let req_json = serde_json::to_vec(&req).context("serialize request")?;
@@ -237,6 +240,7 @@ impl AgentRuntime {
                 self.session.messages.push(ChatMessage {
                     role: "assistant".to_string(),
                     content: out.clone(),
+                    extra: Default::default(),
                 });
                 self.memory_store
                     .add_message(assistant_index, &self.session.messages[assistant_index]);
@@ -272,6 +276,7 @@ impl AgentRuntime {
                 content: self
                     .redactor
                     .redact(&m.content, self.redact_mode, &self.extra_terms),
+                extra: Default::default(),
             });
         }
 

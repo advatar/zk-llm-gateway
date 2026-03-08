@@ -63,10 +63,12 @@ Update the existing summary with the new turn.\n\
                 ChatMessage {
                     role: "system".to_string(),
                     content: sys.to_string(),
+                    extra: Default::default(),
                 },
                 ChatMessage {
                     role: "user".to_string(),
                     content: user,
+                    extra: Default::default(),
                 },
             ],
             max_tokens: 512,

@@ -87,10 +87,6 @@ impl Redactor {
         &self.state
     }
 
-    pub fn state_mut(&mut self) -> &mut RedactionState {
-        &mut self.state
-    }
-
     pub fn add_custom_term(&mut self, term: String) {
         if term.trim().is_empty() {
             return;

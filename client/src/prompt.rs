@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use rand::{rngs::OsRng, Rng};
 
 use zk_llm_common::{token::TokenClass, types::ChatMessage};
@@ -7,7 +5,7 @@ use zk_llm_common::{token::TokenClass, types::ChatMessage};
 use crate::{
     memory_store::RetrievedContext,
     redaction::{RedactMode, Redactor},
-    session::{MemoryItem, Session},
+    session::Session,
 };
 
 /// Configuration for building a remote prompt from a long-lived local session.
@@ -50,60 +48,6 @@ impl Default for PromptBuildConfig {
     }
 }
 
-/// Build a minimized remote prompt for a personal-agent chat session.
-///
-/// Strategy:
-/// - Keep the *full* session locally.
-/// - Send only:
-///   - system prompt
-///   - a compact "selected memory" block (optional)
-///   - the last N messages
-/// - Redact sensitive content before sending.
-/// - Enforce the token-class budget (bytes approximation) by trimming memory and history.
-pub fn build_remote_messages(
-    session: &Session,
-    token_class: TokenClass,
-    redact_mode: RedactMode,
-    extra_redaction_terms: &[String],
-    redactor: &mut Redactor,
-    cfg: &PromptBuildConfig,
-) -> Vec<ChatMessage> {
-    // Backward-compatible: if no retrieval bundle is provided, fall back to naive memory selection.
-    let retrieved = RetrievedContext {
-        memories: select_relevant_memory(
-            &session.memory,
-            session
-                .messages
-                .last()
-                .map(|m| m.content.as_str())
-                .unwrap_or(""),
-            cfg.max_memory_items,
-        )
-        .into_iter()
-        .map(|m| crate::memory_store::Doc {
-            kind: crate::memory_store::DocKind::Memory,
-            id: m.id.to_string(),
-            created_at_ms: m.created_at_ms,
-            role: None,
-            msg_index: None,
-            text: m.text.clone(),
-            tags: m.tags.clone(),
-        })
-        .collect(),
-        recall: Vec::new(),
-    };
-
-    build_remote_messages_with_retrieval(
-        session,
-        &retrieved,
-        token_class,
-        redact_mode,
-        extra_redaction_terms,
-        redactor,
-        cfg,
-    )
-}
-
 /// Build a minimized remote prompt using a retrieval bundle.
 ///
 /// The retrieval bundle should be computed locally (RAG) and is intended to:
@@ -129,6 +73,7 @@ pub fn build_remote_messages_with_retrieval(
     messages.push(ChatMessage {
         role: "system".to_string(),
         content: system_content,
+        extra: Default::default(),
     });
 
     let normalize = cfg.normalize_context_blocks;
@@ -198,6 +143,7 @@ pub fn build_remote_messages_with_retrieval(
         messages.push(ChatMessage {
             role: "system".to_string(),
             content: memory_redacted,
+            extra: Default::default(),
         });
     }
 
@@ -208,6 +154,7 @@ pub fn build_remote_messages_with_retrieval(
         messages.push(ChatMessage {
             role: m.role.clone(),
             content: redacted,
+            extra: Default::default(),
         });
     }
 
@@ -353,43 +300,4 @@ fn approx_prompt_bytes(messages: &[ChatMessage]) -> usize {
         .iter()
         .map(|m| m.role.len() + m.content.len())
         .sum()
-}
-
-fn select_relevant_memory<'a>(
-    memory: &'a [MemoryItem],
-    query: &str,
-    max_items: usize,
-) -> Vec<&'a MemoryItem> {
-    if memory.is_empty() || query.trim().is_empty() || max_items == 0 {
-        return Vec::new();
-    }
-
-    let q = tokenize(query);
-    if q.is_empty() {
-        return Vec::new();
-    }
-    let qset: HashSet<String> = q.into_iter().collect();
-
-    let mut scored: Vec<(&MemoryItem, usize)> = memory
-        .iter()
-        .map(|m| (m, score(&qset, &m.text)))
-        .filter(|(_m, s)| *s > 0)
-        .collect();
-
-    // Most relevant first.
-    scored.sort_by_key(|(_m, s)| std::cmp::Reverse(*s));
-    scored.into_iter().take(max_items).map(|(m, _)| m).collect()
-}
-
-fn tokenize(s: &str) -> Vec<String> {
-    s.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.len() >= 3)
-        .map(|w| w.to_string())
-        .collect()
-}
-
-fn score(q: &HashSet<String>, text: &str) -> usize {
-    let toks = tokenize(text);
-    toks.into_iter().filter(|t| q.contains(t)).count()
 }

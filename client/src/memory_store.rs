@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use zk_llm_common::types::ChatMessage;
 
@@ -177,10 +176,6 @@ impl MemoryStore {
         self.avg_doc_len = sum / (self.doc_len.len() as f32);
     }
 
-    pub fn doc_count(&self) -> usize {
-        self.docs.len()
-    }
-
     pub fn search(
         &self,
         query: &str,
@@ -294,7 +289,11 @@ impl MemoryStore {
                 if r.doc.text.chars().count() > 400 {
                     content.push('…');
                 }
-                recall_msgs.push(ChatMessage { role, content });
+                recall_msgs.push(ChatMessage {
+                    role,
+                    content,
+                    extra: Default::default(),
+                });
             }
         }
 
@@ -392,14 +391,4 @@ fn is_stopword(w: &str) -> bool {
             | "using"
             | "used"
     )
-}
-
-/// Convenience helper to build a tagged memory item.
-pub fn memory_item(text: String, tags: Vec<String>) -> MemoryItem {
-    MemoryItem {
-        id: Uuid::new_v4(),
-        created_at_ms: crate::session::now_ms(),
-        text,
-        tags,
-    }
 }

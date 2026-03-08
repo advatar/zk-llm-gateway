@@ -1,4 +1,7 @@
-use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::token::TokenClass;
@@ -8,7 +11,10 @@ use crate::zk::ZkTicket;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
+    #[serde(default, deserialize_with = "deserialize_chat_message_content")]
     pub content: String,
+    #[serde(default, flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 /// Request payload sent *inside* the encrypted envelope.
@@ -37,11 +43,23 @@ pub struct InferenceRequest {
     /// Sampling temperature.
     pub temperature: Option<f32>,
 
+    /// The canonical `/v1/infer` path is non-streaming today.
+    ///
+    /// Clients may send `false` (or omit the field). `true` is rejected so the
+    /// request does not silently degrade into a non-streaming call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<bool>,
+
     /// The privacy/billing bucket for this request.
     pub token_class: TokenClass,
 
     /// Anonymous usage authorization.
     pub ticket: ZkTicket,
+
+    /// Additional OpenAI-compatible request fields forwarded to the upstream
+    /// provider. Examples include `top_p`, `response_format`, and `tools`.
+    #[serde(default, flatten)]
+    pub provider_options: HashMap<String, Value>,
 }
 
 /// Response payload returned *inside* the encrypted envelope.
@@ -55,6 +73,11 @@ pub struct InferenceResponse {
 
     /// Coarsened usage info (does not reveal exact token counts).
     pub billed_token_class: TokenClass,
+
+    /// Raw upstream response body for OpenAI-compatible clients that need
+    /// provider-specific fields such as tool calls or structured outputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<Value>,
 }
 
 /// A machine-readable error response.
@@ -74,4 +97,16 @@ pub struct ErrorResponse {
 pub enum GatewayEnvelopePayload {
     Ok { response: InferenceResponse },
     Err { error: ErrorResponse },
+}
+
+fn deserialize_chat_message_content<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(Value::Null) => Ok(String::new()),
+        Some(Value::String(s)) => Ok(s),
+        Some(other) => serde_json::to_string(&other).map_err(serde::de::Error::custom),
+    }
 }

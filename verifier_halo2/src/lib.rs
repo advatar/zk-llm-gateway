@@ -1,8 +1,12 @@
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+#[cfg(feature = "halo2")]
+use anyhow::Context;
 
-use zk_llm_common::zk::{replay_key, VerifiedTicket, ZkTicket, ZkVerifier, ZkVerifyError};
+use zk_llm_common::zk::{VerifiedTicket, ZkTicket, ZkVerifier, ZkVerifyError};
+#[cfg(feature = "halo2")]
+use zk_llm_common::zk::replay_key;
 
 /// Configuration for a Halo2/Plonk verifier.
 ///
@@ -24,10 +28,14 @@ pub struct Halo2PlonkVerifierConfig {
 ///
 /// By default, this verifier is compiled *without* pulling in halo2 dependencies.
 /// To enable real verification, build with the `halo2` feature.
+#[cfg(feature = "halo2")]
 pub struct Halo2PlonkVerifier {
     vk_bytes: Vec<u8>,
     params_bytes: Option<Vec<u8>>,
 }
+
+#[cfg(not(feature = "halo2"))]
+pub struct Halo2PlonkVerifier;
 
 impl Halo2PlonkVerifier {
     /// Create a verifier from on-disk artifacts.

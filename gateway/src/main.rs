@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use axum::{
@@ -12,7 +12,7 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use clap::{Parser, ValueEnum};
 use log::{error, info, warn};
 use rand::Rng;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::time::sleep;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
@@ -339,7 +339,7 @@ async fn infer_canonical(
     started: std::time::Instant,
 ) -> Result<Json<zk_llm_common::envelope::Envelope>, ApiError> {
     // From here on, we can return encrypted errors.
-    let result: Result<String, EncryptedError> = async {
+    let result: Result<ProviderChatCompletionResult, EncryptedError> = async {
         // Consistency checks to reduce cross-protocol confusion
         if req.token_class != env.token_class {
             return Err(EncryptedError::bad_request(
@@ -364,6 +364,14 @@ async fn infer_canonical(
                 req.request_id,
                 "prompt_too_large",
                 "prompt exceeds token-class size limit",
+            ));
+        }
+
+        if req.stream == Some(true) {
+            return Err(EncryptedError::bad_request(
+                req.request_id,
+                "stream_unsupported",
+                "stream=true is not supported on /v1/infer",
             ));
         }
 
@@ -394,8 +402,8 @@ async fn infer_canonical(
         })?;
 
         // Forward request to provider
-        let output = match call_provider(&state, &req).await {
-            Ok(o) => o,
+        let provider_response = match call_provider(&state, &req).await {
+            Ok(response) => response,
             Err(e) => {
                 // Best-effort: release pending reservation to allow retry.
                 let _ = state.nullifier_db.compare_and_swap(
@@ -415,18 +423,19 @@ async fn infer_canonical(
         // We avoid modifying model outputs in v1 to preserve semantics.
 
         // Build response
-        Ok(output)
+        Ok(provider_response)
     }
     .await;
 
     // Convert to encrypted payload
     let payload = match result {
-        Ok(output) => {
+        Ok(provider_response) => {
             let resp = InferenceResponse {
                 request_id: req.request_id,
                 model: req.model.clone(),
-                output,
+                output: provider_response.output,
                 billed_token_class: req.token_class,
+                upstream: Some(provider_response.body),
             };
             GatewayEnvelopePayload::Ok { response: resp }
         }
@@ -568,24 +577,22 @@ struct ProviderChatCompletionRequest {
     max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<bool>,
+    #[serde(flatten)]
+    extra: HashMap<String, Value>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ProviderChatCompletionResponse {
-    choices: Vec<ProviderChoice>,
+#[derive(Debug)]
+struct ProviderChatCompletionResult {
+    body: Value,
+    output: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct ProviderChoice {
-    message: ProviderMessage,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProviderMessage {
-    content: Option<String>,
-}
-
-async fn call_provider(state: &AppState, req: &InferenceRequest) -> Result<String, EncryptedError> {
+async fn call_provider(
+    state: &AppState,
+    req: &InferenceRequest,
+) -> Result<ProviderChatCompletionResult, EncryptedError> {
     // Clamp output length to token class
     // Privacy choice: ignore client-provided max_tokens and always use the class maximum.
     // This coarsens metadata visible to the upstream provider.
@@ -596,6 +603,8 @@ async fn call_provider(state: &AppState, req: &InferenceRequest) -> Result<Strin
         messages: req.messages.clone(),
         max_tokens,
         temperature: req.temperature,
+        stream: req.stream,
+        extra: req.provider_options.clone(),
     };
 
     let url = format!(
@@ -632,25 +641,21 @@ async fn call_provider(state: &AppState, req: &InferenceRequest) -> Result<Strin
         ));
     }
 
-    let parsed: ProviderChatCompletionResponse = serde_json::from_slice(&bytes).map_err(|e| {
+    let body: Value = serde_json::from_slice(&bytes).map_err(|e| {
         error!("failed to parse upstream response: {}", e);
         EncryptedError::upstream(req.request_id, "upstream_parse", "upstream parse error")
     })?;
 
-    let output = parsed
-        .choices
-        .get(0)
-        .and_then(|c| c.message.content.clone())
-        .unwrap_or_else(|| "".to_string());
-
-    Ok(output)
+    Ok(ProviderChatCompletionResult {
+        output: extract_provider_output(&body),
+        body,
+    })
 }
 
 fn approx_prompt_bytes(messages: &[zk_llm_common::types::ChatMessage]) -> usize {
-    messages
-        .iter()
-        .map(|m| m.role.len() + m.content.len())
-        .sum()
+    serde_json::to_vec(messages)
+        .map(|bytes| bytes.len())
+        .unwrap_or_else(|_| messages.iter().map(|m| m.role.len() + m.content.len()).sum())
 }
 
 #[derive(Debug)]
@@ -664,6 +669,21 @@ fn encode_nullifier_value(status: u8, ts_ms: u64) -> Vec<u8> {
     v.push(status);
     v.extend_from_slice(&ts_ms.to_be_bytes());
     v
+}
+
+fn extract_provider_output(body: &Value) -> String {
+    let content = body
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"));
+
+    match content {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Null) | None => String::new(),
+        Some(other) => other.to_string(),
+    }
 }
 
 fn decode_nullifier_value(v: &[u8]) -> Option<(u8, u64)> {

@@ -51,7 +51,6 @@ struct ApiState {
     manager: Arc<AgentManager>,
     api_key: Option<String>,
     default_session_id: String,
-    enable_multi_session: bool,
     stream_chunk_chars: usize,
     stream_chunk_delay_ms: u64,
 }
@@ -61,7 +60,6 @@ pub async fn serve_http(config: ApiConfig, manager: Arc<AgentManager>) -> Result
         manager,
         api_key: config.api_key,
         default_session_id: config.default_session_id,
-        enable_multi_session: config.enable_multi_session,
         stream_chunk_chars: config.stream_chunk_chars,
         stream_chunk_delay_ms: config.stream_chunk_delay_ms,
     };
@@ -340,7 +338,7 @@ async fn post_chat_stream_for(
         Err(e) => return ApiError::BadRequest(format!("{:#}", e)).into_response(),
     };
 
-    let (tx, mut rx) = mpsc::channel::<Event>(64);
+    let (tx, rx) = mpsc::channel::<Event>(64);
 
     let request_id = Uuid::new_v4().to_string();
     let chunk_chars = state.stream_chunk_chars.max(1);
