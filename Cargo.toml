@@ -7,6 +7,9 @@ members = [
   "relay",
   "verifier_halo2",
 ]
+exclude = [
+  "zk-llm-gateway-rust-sdk",
+]
 
 [workspace.package]
 edition = "2021"

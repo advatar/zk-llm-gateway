@@ -31,6 +31,19 @@ It implements the *plumbing* needed for a "ZK API usage credits"-style system:
 - `gateway/` — the LLM gateway (decrypts envelope, verifies ticket, checks replay, forwards to provider)
 - `relay/` — optional privacy relay (forwards encrypted envelopes; gateway sees relay IP, not client IP)
 - `client/` — CLI that stores history locally and sends only minimized context
+- `zk-llm-gateway-*-sdk/` — language SDKs tracked as Git submodules
+
+---
+
+## SDK submodules
+
+Initialize SDK repos after cloning:
+
+```bash
+git submodule update --init --recursive
+```
+
+Each SDK stays versioned in its own repository while this repo pins the SDK commits that match the gateway wire format.
 
 ---
 

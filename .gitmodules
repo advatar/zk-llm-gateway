@@ -1,0 +1,16 @@
+[submodule "zk-llm-gateway-rust-sdk"]
+	path = zk-llm-gateway-rust-sdk
+	url = git@github.com:advatar/zk-llm-gateway-rust-sdk.git
+	branch = main
+[submodule "zk-llm-gateway-python-sdk"]
+	path = zk-llm-gateway-python-sdk
+	url = git@github.com:advatar/zk-llm-gateway-python-sdk.git
+	branch = main
+[submodule "zk-llm-gateway-typescript-sdk"]
+	path = zk-llm-gateway-typescript-sdk
+	url = git@github.com:advatar/zk-llm-gateway-typescript-sdk.git
+	branch = main
+[submodule "zk-llm-gateway-swift-sdk"]
+	path = zk-llm-gateway-swift-sdk
+	url = git@github.com:advatar/zk-llm-gateway-swift-sdk.git
+	branch = main
