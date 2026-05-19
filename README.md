@@ -37,6 +37,13 @@ It implements the *plumbing* needed for a "ZK API usage credits"-style system:
 
 ## SDK submodules
 
+Client SDK repositories:
+
+- [Rust SDK](https://github.com/advatar/zk-llm-gateway-rust-sdk)
+- [Python SDK](https://github.com/advatar/zk-llm-gateway-python-sdk)
+- [TypeScript SDK](https://github.com/advatar/zk-llm-gateway-typescript-sdk)
+- [Swift SDK](https://github.com/advatar/zk-llm-gateway-swift-sdk)
+
 Initialize SDK repos after cloning:
 
 ```bash
