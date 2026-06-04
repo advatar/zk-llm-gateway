@@ -1,9 +1,4 @@
-use std::{
-    collections::HashMap,
-    fs,
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
 use log::warn;

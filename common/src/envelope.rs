@@ -7,7 +7,8 @@ use chacha20poly1305::{
 use hkdf::Hkdf;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroize;
 
@@ -65,7 +66,10 @@ impl Drop for GatewayKeypair {
 /// Keep this only in memory, and drop it after the response is decrypted.
 pub struct ClientCryptoContext {
     eph_secret_bytes: [u8; 32],
+    eph_pub_bytes: [u8; 32],
     gateway_public_bytes: [u8; 32],
+    client_nonce_bytes: [u8; 32],
+    request_id: Uuid,
     token_class: TokenClass,
 }
 
@@ -79,8 +83,21 @@ impl ClientCryptoContext {
         if env.version != Envelope::VERSION {
             return Err(anyhow!("unsupported envelope version: {}", env.version));
         }
+        if env.request_id != self.request_id {
+            return Err(anyhow!("request_id mismatch"));
+        }
         if env.token_class != self.token_class {
             return Err(anyhow!("token class mismatch"));
+        }
+
+        let eph_pub_bytes = decode_eph_pubkey(env)?;
+        if eph_pub_bytes != self.eph_pub_bytes {
+            return Err(anyhow!("unexpected eph_pubkey in response"));
+        }
+
+        let client_nonce_bytes = decode_client_nonce(env)?;
+        if client_nonce_bytes != self.client_nonce_bytes {
+            return Err(anyhow!("client nonce mismatch"));
         }
 
         let nonce_bytes: [u8; 12] = B64
@@ -97,11 +114,28 @@ impl ClientCryptoContext {
         let eph_secret = StaticSecret::from(self.eph_secret_bytes);
         let gateway_public = PublicKey::from(self.gateway_public_bytes);
         let shared = eph_secret.diffie_hellman(&gateway_public);
+        ensure_contributory(shared.as_bytes())?;
 
-        let key = derive_key(shared.as_bytes(), KeyDirection::Response, self.token_class)?;
+        let key = derive_key(
+            shared.as_bytes(),
+            KeyDirection::Response,
+            self.token_class,
+            self.request_id,
+            &self.client_nonce_bytes,
+            &self.eph_pub_bytes,
+            &self.gateway_public_bytes,
+        )?;
         let aead = ChaCha20Poly1305::new(Key::from_slice(&key));
 
-        let aad = aad_bytes(self.token_class, KeyDirection::Response);
+        let aad = aad_bytes(
+            env.version,
+            self.token_class,
+            KeyDirection::Response,
+            self.request_id,
+            &self.client_nonce_bytes,
+            &self.eph_pub_bytes,
+            &self.gateway_public_bytes,
+        );
 
         let plaintext_padded = aead
             .decrypt(
@@ -134,6 +168,13 @@ pub struct Envelope {
     #[serde(rename = "v", alias = "version")]
     pub version: u8,
     pub token_class: TokenClass,
+    /// Client-generated request id, mirrored from the encrypted request payload.
+    ///
+    /// The gateway authenticates this field and echoes it in the response envelope
+    /// so relays cannot replay a valid response across requests in the same token class.
+    pub request_id: Uuid,
+    /// Base64-encoded 32-byte client nonce used to bind this request transcript.
+    pub client_nonce_b64: String,
     /// Base64-encoded client ephemeral public key.
     ///
     /// Serialized as `eph_pubkey_b64` for SDK compatibility.
@@ -147,7 +188,7 @@ pub struct Envelope {
 }
 
 impl Envelope {
-    pub const VERSION: u8 = 1;
+    pub const VERSION: u8 = 2;
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -164,6 +205,7 @@ enum KeyDirection {
 pub fn seal_request_for_gateway(
     gateway_public_bytes: [u8; 32],
     token_class: TokenClass,
+    request_id: Uuid,
     plaintext_json: &[u8],
 ) -> Result<(Envelope, ClientCryptoContext)> {
     let gateway_public = PublicKey::from(gateway_public_bytes);
@@ -171,6 +213,10 @@ pub fn seal_request_for_gateway(
     // Generate an ephemeral secret (one-time per request)
     let eph_secret = StaticSecret::random_from_rng(OsRng);
     let eph_pub = PublicKey::from(&eph_secret);
+    let eph_pub_bytes = eph_pub.to_bytes();
+
+    let mut client_nonce_bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut client_nonce_bytes);
 
     // Pad plaintext to fixed size per token class
     let mut padded = pad_to_len(
@@ -180,7 +226,16 @@ pub fn seal_request_for_gateway(
 
     // Shared secret and request key
     let shared = eph_secret.diffie_hellman(&gateway_public);
-    let req_key = derive_key(shared.as_bytes(), KeyDirection::Request, token_class)?;
+    ensure_contributory(shared.as_bytes())?;
+    let req_key = derive_key(
+        shared.as_bytes(),
+        KeyDirection::Request,
+        token_class,
+        request_id,
+        &client_nonce_bytes,
+        &eph_pub_bytes,
+        &gateway_public_bytes,
+    )?;
 
     let aead = ChaCha20Poly1305::new(Key::from_slice(&req_key));
 
@@ -188,7 +243,15 @@ pub fn seal_request_for_gateway(
     OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
-    let aad = aad_bytes(token_class, KeyDirection::Request);
+    let aad = aad_bytes(
+        Envelope::VERSION,
+        token_class,
+        KeyDirection::Request,
+        request_id,
+        &client_nonce_bytes,
+        &eph_pub_bytes,
+        &gateway_public_bytes,
+    );
 
     let ciphertext = aead
         .encrypt(
@@ -205,7 +268,10 @@ pub fn seal_request_for_gateway(
 
     let ctx = ClientCryptoContext {
         eph_secret_bytes: eph_secret.to_bytes(),
+        eph_pub_bytes,
         gateway_public_bytes,
+        client_nonce_bytes,
+        request_id,
         token_class,
     };
 
@@ -213,7 +279,9 @@ pub fn seal_request_for_gateway(
         Envelope {
             version: Envelope::VERSION,
             token_class,
-            kem_pub_b64: B64.encode(eph_pub.to_bytes()),
+            request_id,
+            client_nonce_b64: B64.encode(client_nonce_bytes),
+            kem_pub_b64: B64.encode(eph_pub_bytes),
             nonce_b64: B64.encode(nonce_bytes),
             ciphertext_b64: B64.encode(ciphertext),
         },
@@ -229,12 +297,9 @@ pub fn open_request_at_gateway(keypair: &GatewayKeypair, env: &Envelope) -> Resu
         return Err(anyhow!("unsupported envelope version: {}", env.version));
     }
 
-    let eph_pub_bytes: [u8; 32] = B64
-        .decode(&env.kem_pub_b64)
-        .context("invalid kem_pub_b64")?
-        .try_into()
-        .map_err(|_| anyhow!("kem_pub wrong length"))?;
+    let eph_pub_bytes = decode_eph_pubkey(env)?;
     let eph_pub = PublicKey::from(eph_pub_bytes);
+    let client_nonce_bytes = decode_client_nonce(env)?;
 
     let nonce_bytes: [u8; 12] = B64
         .decode(&env.nonce_b64)
@@ -248,10 +313,28 @@ pub fn open_request_at_gateway(keypair: &GatewayKeypair, env: &Envelope) -> Resu
         .context("invalid ciphertext_b64")?;
 
     let shared = keypair.secret_key().diffie_hellman(&eph_pub);
-    let req_key = derive_key(shared.as_bytes(), KeyDirection::Request, env.token_class)?;
+    ensure_contributory(shared.as_bytes())?;
+    let gateway_public_bytes = keypair.public_bytes();
+    let req_key = derive_key(
+        shared.as_bytes(),
+        KeyDirection::Request,
+        env.token_class,
+        env.request_id,
+        &client_nonce_bytes,
+        &eph_pub_bytes,
+        &gateway_public_bytes,
+    )?;
 
     let aead = ChaCha20Poly1305::new(Key::from_slice(&req_key));
-    let aad = aad_bytes(env.token_class, KeyDirection::Request);
+    let aad = aad_bytes(
+        env.version,
+        env.token_class,
+        KeyDirection::Request,
+        env.request_id,
+        &client_nonce_bytes,
+        &eph_pub_bytes,
+        &gateway_public_bytes,
+    );
 
     let plaintext_padded = aead
         .decrypt(
@@ -281,12 +364,9 @@ pub fn seal_response_at_gateway(
         ));
     }
 
-    let eph_pub_bytes: [u8; 32] = B64
-        .decode(&request_env.kem_pub_b64)
-        .context("invalid kem_pub_b64")?
-        .try_into()
-        .map_err(|_| anyhow!("kem_pub wrong length"))?;
+    let eph_pub_bytes = decode_eph_pubkey(request_env)?;
     let eph_pub = PublicKey::from(eph_pub_bytes);
+    let client_nonce_bytes = decode_client_nonce(request_env)?;
 
     let mut padded = pad_to_len(
         plaintext_json.to_vec(),
@@ -294,10 +374,16 @@ pub fn seal_response_at_gateway(
     )?;
 
     let shared = keypair.secret_key().diffie_hellman(&eph_pub);
+    ensure_contributory(shared.as_bytes())?;
+    let gateway_public_bytes = keypair.public_bytes();
     let resp_key = derive_key(
         shared.as_bytes(),
         KeyDirection::Response,
         request_env.token_class,
+        request_env.request_id,
+        &client_nonce_bytes,
+        &eph_pub_bytes,
+        &gateway_public_bytes,
     )?;
 
     let aead = ChaCha20Poly1305::new(Key::from_slice(&resp_key));
@@ -306,7 +392,15 @@ pub fn seal_response_at_gateway(
     OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
-    let aad = aad_bytes(request_env.token_class, KeyDirection::Response);
+    let aad = aad_bytes(
+        request_env.version,
+        request_env.token_class,
+        KeyDirection::Response,
+        request_env.request_id,
+        &client_nonce_bytes,
+        &eph_pub_bytes,
+        &gateway_public_bytes,
+    );
 
     let ciphertext = aead
         .encrypt(
@@ -323,6 +417,8 @@ pub fn seal_response_at_gateway(
     Ok(Envelope {
         version: Envelope::VERSION,
         token_class: request_env.token_class,
+        request_id: request_env.request_id,
+        client_nonce_b64: request_env.client_nonce_b64.clone(),
         kem_pub_b64: request_env.kem_pub_b64.clone(),
         nonce_b64: B64.encode(nonce_bytes),
         ciphertext_b64: B64.encode(ciphertext),
@@ -330,11 +426,23 @@ pub fn seal_response_at_gateway(
 }
 
 fn derive_key(
-    shared_secret: &[u8],
+    shared_secret: &[u8; 32],
     dir: KeyDirection,
     token_class: TokenClass,
+    request_id: Uuid,
+    client_nonce: &[u8; 32],
+    eph_pub: &[u8; 32],
+    gateway_pub: &[u8; 32],
 ) -> Result<[u8; 32]> {
-    let hk = Hkdf::<Sha256>::new(None, shared_secret);
+    let salt = binding_salt(
+        Envelope::VERSION,
+        token_class,
+        request_id,
+        client_nonce,
+        eph_pub,
+        gateway_pub,
+    );
+    let hk = Hkdf::<Sha256>::new(Some(&salt), shared_secret);
     let mut okm = [0u8; 32];
     let info = hkdf_info(token_class, dir);
     hk.expand(&info, &mut okm)
@@ -345,7 +453,7 @@ fn derive_key(
 fn hkdf_info(token_class: TokenClass, dir: KeyDirection) -> Vec<u8> {
     // Binding the derived key to the direction + token class makes cross-protocol
     // confusion harder.
-    let mut v = b"zk-llm-gateway-envelope-v1".to_vec();
+    let mut v = b"zk-llm-gateway-envelope-v2".to_vec();
     match dir {
         KeyDirection::Request => v.extend_from_slice(b"/req"),
         KeyDirection::Response => v.extend_from_slice(b"/resp"),
@@ -354,11 +462,90 @@ fn hkdf_info(token_class: TokenClass, dir: KeyDirection) -> Vec<u8> {
     v
 }
 
-fn aad_bytes(token_class: TokenClass, dir: KeyDirection) -> Vec<u8> {
-    // Additional associated data binds the ciphertext to the class + version + direction.
+fn aad_bytes(
+    version: u8,
+    token_class: TokenClass,
+    dir: KeyDirection,
+    request_id: Uuid,
+    client_nonce: &[u8; 32],
+    eph_pub: &[u8; 32],
+    gateway_pub: &[u8; 32],
+) -> Vec<u8> {
+    // Additional associated data binds the ciphertext to this request transcript.
     let d = match dir {
         KeyDirection::Request => 1u8,
         KeyDirection::Response => 2u8,
     };
-    vec![Envelope::VERSION, token_class.id_u8(), d]
+    let mut v = binding_material(
+        b"zk-llm-gateway-envelope-aad-v2",
+        version,
+        token_class,
+        request_id,
+        client_nonce,
+        eph_pub,
+        gateway_pub,
+    );
+    v.push(d);
+    v
+}
+
+fn binding_salt(
+    version: u8,
+    token_class: TokenClass,
+    request_id: Uuid,
+    client_nonce: &[u8; 32],
+    eph_pub: &[u8; 32],
+    gateway_pub: &[u8; 32],
+) -> [u8; 32] {
+    let material = binding_material(
+        b"zk-llm-gateway-envelope-kdf-v2",
+        version,
+        token_class,
+        request_id,
+        client_nonce,
+        eph_pub,
+        gateway_pub,
+    );
+    Sha256::digest(material).into()
+}
+
+fn binding_material(
+    label: &[u8],
+    version: u8,
+    token_class: TokenClass,
+    request_id: Uuid,
+    client_nonce: &[u8; 32],
+    eph_pub: &[u8; 32],
+    gateway_pub: &[u8; 32],
+) -> Vec<u8> {
+    let mut v = Vec::with_capacity(label.len() + 1 + 1 + 36 + 32 + 32 + 32 + 8);
+    v.extend_from_slice(label);
+    v.push(version);
+    v.push(token_class.id_u8());
+    v.extend_from_slice(request_id.to_string().as_bytes());
+    v.extend_from_slice(client_nonce);
+    v.extend_from_slice(eph_pub);
+    v.extend_from_slice(gateway_pub);
+    v
+}
+
+fn decode_eph_pubkey(env: &Envelope) -> Result<[u8; 32]> {
+    B64.decode(&env.kem_pub_b64)
+        .context("invalid kem_pub_b64")?
+        .try_into()
+        .map_err(|_| anyhow!("kem_pub wrong length"))
+}
+
+fn decode_client_nonce(env: &Envelope) -> Result<[u8; 32]> {
+    B64.decode(&env.client_nonce_b64)
+        .context("invalid client_nonce_b64")?
+        .try_into()
+        .map_err(|_| anyhow!("client_nonce wrong length"))
+}
+
+fn ensure_contributory(shared_secret: &[u8; 32]) -> Result<()> {
+    if shared_secret.iter().all(|b| *b == 0) {
+        return Err(anyhow!("invalid x25519 shared secret"));
+    }
+    Ok(())
 }

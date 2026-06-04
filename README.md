@@ -115,14 +115,10 @@ export PROVIDER_BASE_URL="http://127.0.0.1:8000"
 
 ```bash
 export GATEWAY_ALLOW_DUMMY_VERIFIER=true
-cargo run -p zk_llm_gateway
+cargo run -p zk_llm_gateway -- --zk-verifier dummy --listen-addr 127.0.0.1:8080
 ```
 
-Optional: select verifier explicitly (dummy is dev-only):
-
-```bash
-cargo run -p zk_llm_gateway -- --zk-verifier dummy
-```
+Dummy verification is dev-only and the gateway refuses to bind a non-loopback address while it is active.
 
 Halo2/Plonk skeleton (circuit-specific):
 

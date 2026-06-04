@@ -81,6 +81,14 @@ struct Cli {
     #[arg(long, env = "CLIENT_HTTP_API_KEY")]
     http_api_key: Option<String>,
 
+    /// Comma-separated browser origins allowed to call the local HTTP API.
+    #[arg(
+        long,
+        env = "CLIENT_HTTP_CORS_ALLOWED_ORIGINS",
+        default_value = "http://localhost:3000,http://127.0.0.1:3000"
+    )]
+    http_cors_allowed_origins: String,
+
     /// Enable multi-session mode for the local HTTP API (multiple sessions keyed by session_id).
     #[arg(long, env = "CLIENT_MULTI_SESSION", default_value_t = true, action = clap::ArgAction::Set)]
     multi_session: bool,
@@ -342,6 +350,7 @@ async fn main() -> Result<()> {
             ApiConfig {
                 listen_addr: listen.clone(),
                 api_key: cli.http_api_key.clone(),
+                cors_allowed_origins: cli.http_cors_allowed_origins.clone(),
                 default_session_id: cli.default_session_id.clone(),
                 enable_multi_session: cli.multi_session,
                 stream_chunk_chars: cli.stream_chunk_chars,

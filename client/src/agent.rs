@@ -201,9 +201,13 @@ impl AgentRuntime {
         };
 
         let req_json = serde_json::to_vec(&req).context("serialize request")?;
-        let (env, ctx) =
-            seal_request_for_gateway(self.gateway_public_bytes, self.token_class, &req_json)
-                .context("encrypt request")?;
+        let (env, ctx) = seal_request_for_gateway(
+            self.gateway_public_bytes,
+            self.token_class,
+            req.request_id,
+            &req_json,
+        )
+        .context("encrypt request")?;
 
         info!(
             "sending request_id={} token_class={:?}",
@@ -233,6 +237,10 @@ impl AgentRuntime {
 
         match payload {
             GatewayEnvelopePayload::Ok { response } => {
+                if response.request_id != req.request_id {
+                    anyhow::bail!("gateway response request_id mismatch");
+                }
+
                 // Rehydrate placeholders for local display and local storage.
                 let out = self.redactor.rehydrate(&response.output);
 
@@ -254,6 +262,11 @@ impl AgentRuntime {
                 Ok(out)
             }
             GatewayEnvelopePayload::Err { error } => {
+                if let Some(response_request_id) = error.request_id {
+                    if response_request_id != req.request_id {
+                        anyhow::bail!("gateway error request_id mismatch");
+                    }
+                }
                 anyhow::bail!("gateway error: {} - {}", error.code, error.message);
             }
         }

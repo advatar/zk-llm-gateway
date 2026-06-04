@@ -3,7 +3,10 @@ use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 use axum::{
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{
+        header::{AUTHORIZATION, CONTENT_TYPE},
+        HeaderMap, HeaderValue, Method, StatusCode,
+    },
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
@@ -13,7 +16,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    cors::{AllowOrigin, CorsLayer},
+    trace::TraceLayer,
+};
 use uuid::Uuid;
 
 use crate::{agent::AgentRuntime, manager::AgentManager};
@@ -33,6 +39,7 @@ use crate::{agent::AgentRuntime, manager::AgentManager};
 pub struct ApiConfig {
     pub listen_addr: String,
     pub api_key: Option<String>,
+    pub cors_allowed_origins: String,
 
     /// Default session id used by legacy endpoints (/v1/session, /v1/chat, etc).
     pub default_session_id: String,
@@ -109,7 +116,7 @@ pub async fn serve_http(config: ApiConfig, manager: Arc<AgentManager>) -> Result
     }
 
     let app = app
-        .layer(CorsLayer::permissive())
+        .layer(cors_layer(&config.cors_allowed_origins)?)
         .layer(TraceLayer::new_for_http())
         .with_state(Arc::new(state));
 
@@ -136,6 +143,24 @@ async fn shutdown_signal() {
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+fn cors_layer(allowed_origins: &str) -> Result<CorsLayer> {
+    let origins = allowed_origins
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .map(|origin| {
+            origin
+                .parse::<HeaderValue>()
+                .with_context(|| format!("invalid CORS origin: {}", origin))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([CONTENT_TYPE, AUTHORIZATION]))
 }
 
 fn check_api_key(

@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
 #[cfg(feature = "halo2")]
 use anyhow::Context;
+use anyhow::Result;
 
-use zk_llm_common::zk::{VerifiedTicket, ZkTicket, ZkVerifier, ZkVerifyError};
 #[cfg(feature = "halo2")]
 use zk_llm_common::zk::replay_key;
+use zk_llm_common::zk::{VerifiedTicket, ZkTicket, ZkVerifier, ZkVerifyError};
 
 /// Configuration for a Halo2/Plonk verifier.
 ///
@@ -86,16 +86,11 @@ impl Halo2PlonkVerifier {
         // Because circuits differ, this repository does not ship a one-size-fits-all verifier.
         // The *interface* is here so you can plug yours in cleanly.
 
-        if ticket.proof.0.is_empty() {
-            return Err(ZkVerifyError::InvalidProof);
-        }
-        if ticket.commitment_root.0.is_empty() || ticket.nullifier.0.is_empty() {
-            return Err(ZkVerifyError::InvalidProof);
-        }
-
-        // Placeholder: accept structurally valid tickets.
-        // Replace this with actual halo2 verification.
-        Ok(())
+        let _ = ticket;
+        let _ = (&self.vk_bytes, &self.params_bytes);
+        Err(ZkVerifyError::Internal(
+            "halo2 proof verification is not implemented; refusing to accept tickets".to_string(),
+        ))
     }
 }
 

@@ -151,6 +151,17 @@ mod tests {
     }
 
     #[test]
+    fn padding_shared_test_vector() {
+        let data = b"{\"x\":1}".to_vec();
+        let padded = pad_to_len(data.clone(), 16).expect("padding should succeed");
+        assert_eq!(
+            padded,
+            vec![0x7b, 0x22, 0x78, 0x22, 0x3a, 0x31, 0x7d, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(trim_zero_padding(&padded), data.as_slice());
+    }
+
+    #[test]
     fn pad_to_len_rejects_large_payloads() {
         let err = pad_to_len(vec![1u8, 2, 3, 4], 3).expect_err("payload should be rejected");
         match err {

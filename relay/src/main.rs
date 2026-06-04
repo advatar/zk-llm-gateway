@@ -3,7 +3,10 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{
+        header::{AUTHORIZATION, CONTENT_TYPE},
+        HeaderValue, Method, StatusCode,
+    },
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -12,7 +15,10 @@ use clap::Parser;
 use log::{info, warn};
 use serde_json::{json, Value};
 use tokio::time::timeout;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    cors::{AllowOrigin, CorsLayer},
+    trace::TraceLayer,
+};
 
 use zk_llm_common::envelope::Envelope;
 
@@ -33,6 +39,14 @@ struct Cli {
     /// Timeout (ms) for forwarding requests to gateway
     #[arg(long, env = "RELAY_TIMEOUT_MS", default_value_t = 120_000)]
     timeout_ms: u64,
+
+    /// Comma-separated browser origins allowed to call the relay.
+    #[arg(
+        long,
+        env = "RELAY_CORS_ALLOWED_ORIGINS",
+        default_value = "http://localhost:3000,http://127.0.0.1:3000"
+    )]
+    cors_allowed_origins: String,
 }
 
 #[tokio::main]
@@ -51,13 +65,15 @@ async fn main() -> Result<()> {
         http,
     });
 
+    let cors = cors_layer(&cli.cors_allowed_origins)?;
+
     let app = Router::new()
         .route("/", get(docs))
         .route("/docs", get(docs))
         .route("/openapi.json", get(openapi_json))
         .route("/healthz", get(healthz))
         .route("/relay", post(relay))
-        .layer(CorsLayer::permissive())
+        .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -78,6 +94,24 @@ async fn main() -> Result<()> {
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+fn cors_layer(allowed_origins: &str) -> Result<CorsLayer> {
+    let origins = allowed_origins
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .map(|origin| {
+            origin
+                .parse::<HeaderValue>()
+                .with_context(|| format!("invalid CORS origin: {}", origin))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([CONTENT_TYPE, AUTHORIZATION]))
 }
 
 async fn docs() -> Html<&'static str> {
@@ -142,7 +176,7 @@ async fn docs() -> Html<&'static str> {
     <p>Submit a JSON <code>Envelope</code> payload from the client.</p>
     <pre>curl -sS https://proxy.zerok.cloud/relay \
   -H "content-type: application/json" \
-  -d '{"v":1,"token_class":"c256","eph_pubkey_b64":"...","nonce_b64":"...","ciphertext_b64":"..."}'</pre>
+  -d '{"v":2,"token_class":"c256","request_id":"...","client_nonce_b64":"...","eph_pubkey_b64":"...","nonce_b64":"...","ciphertext_b64":"..."}'</pre>
 
     <h2>Notes</h2>
     <ul>
@@ -256,15 +290,24 @@ async fn openapi_json() -> Json<Value> {
                 },
                 "Envelope": {
                     "type": "object",
-                    "required": ["v", "token_class", "eph_pubkey_b64", "nonce_b64", "ciphertext_b64"],
+                    "required": ["v", "token_class", "request_id", "client_nonce_b64", "eph_pubkey_b64", "nonce_b64", "ciphertext_b64"],
                     "properties": {
                         "v": {
                             "type": "integer",
-                            "minimum": 1,
-                            "example": 1
+                            "minimum": 2,
+                            "example": 2
                         },
                         "token_class": {
                             "$ref": "#/components/schemas/TokenClass"
+                        },
+                        "request_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "description": "Client-generated request id authenticated into the envelope transcript"
+                        },
+                        "client_nonce_b64": {
+                            "type": "string",
+                            "description": "Base64-encoded 32-byte client nonce"
                         },
                         "eph_pubkey_b64": {
                             "type": "string",

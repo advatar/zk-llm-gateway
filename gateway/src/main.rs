@@ -3,7 +3,10 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 use axum::{
     extract::State,
-    http::{Method, StatusCode},
+    http::{
+        header::{AUTHORIZATION, CONTENT_TYPE},
+        HeaderValue, Method, StatusCode,
+    },
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -15,7 +18,10 @@ use rand::Rng;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::time::sleep;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    cors::{AllowOrigin, CorsLayer},
+    trace::TraceLayer,
+};
 use uuid::Uuid;
 
 use zk_llm_common::{
@@ -54,8 +60,8 @@ struct Cli {
     /// Which ZK verifier to use.
     /// - dummy: insecure, dev-only
     /// - halo2: Halo2/Plonk verifier (skeleton; circuit-specific)
-    #[arg(long, env = "GATEWAY_ZK_VERIFIER", value_enum, default_value = "dummy")]
-    zk_verifier: ZkVerifierKind,
+    #[arg(long, env = "GATEWAY_ZK_VERIFIER", value_enum)]
+    zk_verifier: Option<ZkVerifierKind>,
 
     /// Path to a Halo2 verifying key file (required if --zk-verifier halo2)
     #[arg(long, env = "HALO2_VK_PATH")]
@@ -84,13 +90,13 @@ struct Cli {
     /// Maximum additional random delay (ms) before sending encrypted responses.
     ///
     /// This is a *best-effort* mitigation against timing correlation by observers/relays.
-    #[arg(long, env = "PRIVACY_JITTER_MS", default_value_t = 0)]
+    #[arg(long, env = "PRIVACY_JITTER_MS", default_value_t = 250)]
     privacy_jitter_ms: u64,
 
     /// Minimum response time (ms) before sending encrypted responses.
     ///
     /// This is a best-effort mitigation against timing correlation by observers/relays.
-    #[arg(long, env = "PRIVACY_MIN_RESPONSE_DELAY_MS", default_value_t = 0)]
+    #[arg(long, env = "PRIVACY_MIN_RESPONSE_DELAY_MS", default_value_t = 250)]
     privacy_min_response_delay_ms: u64,
 
     /// How long a "pending" nullifier reservation may live before being considered stale.
@@ -98,6 +104,14 @@ struct Cli {
     /// This lets clients retry if the gateway crashes mid-request.
     #[arg(long, env = "NULLIFIER_PENDING_TTL_MS", default_value_t = 300_000)]
     nullifier_pending_ttl_ms: u64,
+
+    /// Comma-separated browser origins allowed to call the gateway.
+    #[arg(
+        long,
+        env = "GATEWAY_CORS_ALLOWED_ORIGINS",
+        default_value = "http://localhost:3000,http://127.0.0.1:3000"
+    )]
+    cors_allowed_origins: String,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -138,9 +152,25 @@ async fn main() -> Result<()> {
         base64::engine::general_purpose::STANDARD.encode(keypair.public_bytes())
     );
 
+    let addr: SocketAddr = cli
+        .listen_addr
+        .parse()
+        .context("invalid GATEWAY_LISTEN_ADDR")?;
+
+    let zk_verifier = cli.zk_verifier.context(
+        "GATEWAY_ZK_VERIFIER is required. Use halo2 in production; dummy is local development only",
+    )?;
+
+    if matches!(zk_verifier, ZkVerifierKind::Dummy) && !addr.ip().is_loopback() {
+        return Err(anyhow::anyhow!(
+            "refusing to bind {} with insecure dummy verifier; use a loopback listen address or configure a real verifier",
+            addr
+        ));
+    }
+
     let db = sled::open(&cli.db_path).context("failed to open sled db")?;
 
-    let verifier: Arc<dyn ZkVerifier> = match cli.zk_verifier {
+    let verifier: Arc<dyn ZkVerifier> = match zk_verifier {
         ZkVerifierKind::Dummy => {
             if cli.allow_dummy_verifier {
                 warn!("USING INSECURE DUMMY VERIFIER (dev mode)");
@@ -182,20 +212,17 @@ async fn main() -> Result<()> {
         nullifier_pending_ttl_ms: cli.nullifier_pending_ttl_ms,
     });
 
+    let cors = cors_layer(&cli.cors_allowed_origins)?;
+
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/v1/pubkey", get(pubkey))
         .route("/v1/models", get(compat_models))
         .route("/v1/chat/completions", post(compat_chat_completions))
         .route("/v1/infer", post(infer))
-        .layer(CorsLayer::permissive())
+        .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
-
-    let addr: SocketAddr = cli
-        .listen_addr
-        .parse()
-        .context("invalid GATEWAY_LISTEN_ADDR")?;
 
     info!("listening on {}", addr);
 
@@ -217,6 +244,24 @@ async fn shutdown_signal() {
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+fn cors_layer(allowed_origins: &str) -> Result<CorsLayer> {
+    let origins = allowed_origins
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .map(|origin| {
+            origin
+                .parse::<HeaderValue>()
+                .with_context(|| format!("invalid CORS origin: {}", origin))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([CONTENT_TYPE, AUTHORIZATION]))
 }
 
 #[derive(Debug, Serialize)]
@@ -405,19 +450,20 @@ async fn infer_canonical(
         let provider_response = match call_provider(&state, &req).await {
             Ok(response) => response,
             Err(e) => {
-                // Best-effort: release pending reservation to allow retry.
-                let _ = state.nullifier_db.compare_and_swap(
-                    &rkey,
-                    Some(pending_val.as_slice()),
-                    None as Option<&[u8]>,
-                );
+                // Best-effort: release this exact pending reservation to allow retry.
+                if let Err(err) =
+                    release_pending_nullifier(&state.nullifier_db, &rkey, &pending_val)
+                {
+                    warn!("failed to release pending nullifier: {:?}", err);
+                }
                 return Err(e);
             }
         };
 
         // Mark as spent.
         let spent_val = encode_nullifier_value(b's', now_ms_u64());
-        let _ = state.nullifier_db.insert(&rkey, spent_val.as_slice());
+        mark_nullifier_spent(&state.nullifier_db, &rkey, &pending_val, &spent_val)
+            .map_err(|_| EncryptedError::internal(req.request_id, "db error"))?;
 
         // (Optional) You can implement additional output shaping/padding here.
         // We avoid modifying model outputs in v1 to preserve semantics.
@@ -655,7 +701,12 @@ async fn call_provider(
 fn approx_prompt_bytes(messages: &[zk_llm_common::types::ChatMessage]) -> usize {
     serde_json::to_vec(messages)
         .map(|bytes| bytes.len())
-        .unwrap_or_else(|_| messages.iter().map(|m| m.role.len() + m.content.len()).sum())
+        .unwrap_or_else(|_| {
+            messages
+                .iter()
+                .map(|m| m.role.len() + m.content.len())
+                .sum()
+        })
 }
 
 #[derive(Debug)]
@@ -707,6 +758,7 @@ fn reserve_nullifier(
         .compare_and_swap(rkey, None as Option<&[u8]>, Some(pending_val))
         .map_err(|_| ReserveError::Db)?;
     if cas.is_ok() {
+        db.flush().map_err(|_| ReserveError::Db)?;
         return Ok(());
     }
 
@@ -717,15 +769,12 @@ fn reserve_nullifier(
             if status == b'p' {
                 let now = now_ms_u64();
                 if now.saturating_sub(ts) > pending_ttl_ms {
-                    // Attempt to clear stale pending.
-                    let _ = db
-                        .compare_and_swap(rkey, Some(val.as_ref()), None as Option<&[u8]>)
-                        .map_err(|_| ReserveError::Db)?;
-                    // Try again.
+                    // Replace the exact stale value in a single CAS to avoid a clear-then-set race.
                     let cas2 = db
-                        .compare_and_swap(rkey, None as Option<&[u8]>, Some(pending_val))
+                        .compare_and_swap(rkey, Some(val.as_ref()), Some(pending_val))
                         .map_err(|_| ReserveError::Db)?;
                     if cas2.is_ok() {
+                        db.flush().map_err(|_| ReserveError::Db)?;
                         return Ok(());
                     }
                 }
@@ -736,10 +785,87 @@ fn reserve_nullifier(
     Err(ReserveError::AlreadyUsed)
 }
 
+fn mark_nullifier_spent(
+    db: &sled::Db,
+    rkey: &[u8],
+    pending_val: &[u8],
+    spent_val: &[u8],
+) -> std::result::Result<(), ReserveError> {
+    let cas = db
+        .compare_and_swap(rkey, Some(pending_val), Some(spent_val))
+        .map_err(|_| ReserveError::Db)?;
+    if cas.is_err() {
+        return Err(ReserveError::Db);
+    }
+    db.flush().map_err(|_| ReserveError::Db)?;
+    Ok(())
+}
+
+fn release_pending_nullifier(
+    db: &sled::Db,
+    rkey: &[u8],
+    pending_val: &[u8],
+) -> std::result::Result<(), ReserveError> {
+    let cas = db
+        .compare_and_swap(rkey, Some(pending_val), None as Option<&[u8]>)
+        .map_err(|_| ReserveError::Db)?;
+    if cas.is_ok() {
+        db.flush().map_err(|_| ReserveError::Db)?;
+    }
+    Ok(())
+}
+
 fn now_ms_u64() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let d = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     (d.as_secs() * 1000) + (d.subsec_millis() as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        decode_nullifier_value, encode_nullifier_value, mark_nullifier_spent, reserve_nullifier,
+        ReserveError,
+    };
+
+    fn temporary_db() -> sled::Db {
+        sled::Config::new()
+            .temporary(true)
+            .open()
+            .expect("temporary sled db")
+    }
+
+    #[test]
+    fn reserve_nullifier_rejects_existing_spent_value() {
+        let db = temporary_db();
+        let key = b"nullifier";
+        let pending = encode_nullifier_value(b'p', 100);
+        let spent = encode_nullifier_value(b's', 101);
+
+        reserve_nullifier(&db, key, &pending, 1_000).expect("initial reserve");
+        mark_nullifier_spent(&db, key, &pending, &spent).expect("mark spent");
+
+        let err = reserve_nullifier(&db, key, &pending, 1_000).expect_err("spent rejects replay");
+        assert!(matches!(err, ReserveError::AlreadyUsed));
+    }
+
+    #[test]
+    fn reserve_nullifier_replaces_stale_pending_with_single_cas() {
+        let db = temporary_db();
+        let key = b"nullifier";
+        let stale = encode_nullifier_value(b'p', 1);
+        let fresh = encode_nullifier_value(b'p', 10_000);
+        db.insert(key, stale).expect("seed stale");
+        db.flush().expect("flush seed");
+
+        reserve_nullifier(&db, key, &fresh, 10).expect("stale pending should be replaced");
+
+        let stored = db.get(key).expect("read value").expect("value exists");
+        assert_eq!(
+            decode_nullifier_value(stored.as_ref()),
+            decode_nullifier_value(&fresh)
+        );
+    }
 }
