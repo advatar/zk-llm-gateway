@@ -191,6 +191,11 @@ async fn main() -> Result<()> {
                 params_path: cli.halo2_params_path.clone().map(Into::into),
             };
             let v = Halo2PlonkVerifier::new(cfg).context("init halo2 verifier")?;
+            warn!(
+                "halo2 verifier selected, but the shipped circuit is a non-functional skeleton: \
+                 it rejects ALL tickets until a real proof verifier is wired in. The gateway will \
+                 start and report healthy, but every /v1/infer request will fail verification."
+            );
             Arc::new(v)
         }
     };
