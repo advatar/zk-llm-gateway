@@ -18,3 +18,11 @@
 - [completed] Add direct GitHub links for each client SDK repository in `README.md`.
 - [completed] Refresh `VALIDATE.md` with docs validation steps.
 - [completed] Run local verification and commit the docs update.
+
+## Active Task: Persist Swift SDK ticket-file consumption
+
+- [completed] Make `FileTicketSource` persist consumed tickets and support appending purchased tickets.
+- [completed] Add Swift SDK tests for persisted consumption and append behavior.
+- [completed] Run `swift test` in `zk-llm-gateway-swift-sdk` and commit the scoped SDK fix.
+  - Verification:
+    - `swift test` in `zk-llm-gateway-swift-sdk` passed 14 tests.
