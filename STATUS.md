@@ -1,11 +1,14 @@
 # Status
 
-## Active Task: Extensive placeholder and mock code review
+## Completed Task: Extensive placeholder and mock code review
 
-- [pending] Review placeholder, mock, stub, dummy verifier, fake data, TODO/FIXME/HACK, and demo-only code paths.
-- [pending] Manually inspect high-risk gateway, relay, verifier, crypto, redaction, ticket, token, and SDK integration paths.
-- [pending] Run feasible local verification and report findings with file/line references.
+- [completed] Review placeholder, mock, stub, dummy verifier, fake data, TODO/FIXME/HACK, and demo-only code paths.
+- [completed] Manually inspect high-risk gateway, relay, verifier, crypto, redaction, ticket, token, and SDK integration paths.
+- [completed] Run feasible local verification and report findings with file/line references.
   - GitHub issue: https://github.com/advatar/zk-llm-gateway/issues/7
+  - Findings posted: https://github.com/advatar/zk-llm-gateway/issues/7#issuecomment-4826507804
+  - Verification:
+    - `cargo test --workspace` passed.
 
 ## Completed Task: Remediate REVIEW.md security findings
 
