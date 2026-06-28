@@ -1,5 +1,12 @@
 # Status
 
+## Active Task: Extensive placeholder and mock code review
+
+- [pending] Review placeholder, mock, stub, dummy verifier, fake data, TODO/FIXME/HACK, and demo-only code paths.
+- [pending] Manually inspect high-risk gateway, relay, verifier, crypto, redaction, ticket, token, and SDK integration paths.
+- [pending] Run feasible local verification and report findings with file/line references.
+  - GitHub issue: https://github.com/advatar/zk-llm-gateway/issues/7
+
 ## Completed Task: Remediate REVIEW.md security findings
 
 - [completed] Fail closed on dummy/ZK verifier paths, align SDK padding, and bind request freshness into encrypted transcripts.
