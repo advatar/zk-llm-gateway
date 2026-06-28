@@ -1,11 +1,11 @@
 # Status
 
-## Active Task: Fix actionable placeholder review findings
+## Completed Task: Fix actionable placeholder review findings
 
-- [pending] Remove dummy-by-omission behavior from the CLI ticket source.
-- [pending] Keep Halo2 verification fail-closed and make non-production limits explicit.
-- [pending] Add or update tests for explicit dummy-ticket opt-in where feasible.
-- [pending] Run `cargo fmt --all` and `cargo test --workspace`.
+- [completed] Remove dummy-by-omission behavior from the CLI ticket source.
+- [completed] Keep Halo2 verification fail-closed and make non-production limits explicit.
+- [completed] Add or update tests for explicit dummy-ticket opt-in where feasible.
+- [completed] Run `cargo fmt --all` and `cargo test --workspace`.
   - GitHub issue: https://github.com/advatar/zk-llm-gateway/issues/8
 
 ## Completed Task: Extensive placeholder and mock code review

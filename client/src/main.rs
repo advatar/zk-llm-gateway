@@ -174,9 +174,13 @@ struct Cli {
     #[arg(long, env = "LOCAL_SUMMARIZER_API_KEY")]
     local_summarizer_api_key: Option<String>,
 
-    /// Optional ticket file (JSON array of ZkTicket). If omitted, uses a dummy ticket source.
+    /// Optional ticket file (JSON array of ZkTicket). Required unless dummy tickets are explicitly enabled.
     #[arg(long)]
     ticket_file: Option<PathBuf>,
+
+    /// Use development-only dummy tickets when no ticket file is provided.
+    #[arg(long, env = "CLIENT_USE_DUMMY_TICKETS", default_value_t = false)]
+    use_dummy_tickets: bool,
 
     /// Timeout (ms) for each HTTP request.
     #[arg(long, env = "CLIENT_TIMEOUT_MS", default_value_t = 120_000)]
@@ -214,6 +218,7 @@ async fn main() -> Result<()> {
     if cli.http_listen_addr.is_none() && !cli.repl && cli.user.is_none() {
         anyhow::bail!("Provide --user, --repl, or --http-listen-addr");
     }
+    validate_ticket_source_config(&cli)?;
 
     let gateway_public_bytes =
         parse_b64_32(&cli.gateway_public_key_b64).context("invalid GATEWAY_PUBLIC_KEY_B64")?;
@@ -266,11 +271,7 @@ async fn main() -> Result<()> {
     };
 
     // Ticket source (shared across sessions to avoid ticket reuse)
-    let ticket_source: std::sync::Arc<dyn TicketSource> = if let Some(path) = &cli.ticket_file {
-        std::sync::Arc::new(FileTicketSource::load(path.clone())?)
-    } else {
-        std::sync::Arc::new(tickets::DummyTicketSource::default())
-    };
+    let ticket_source = build_ticket_source(&cli)?;
 
     let token_class: TokenClass = cli.token_class.into();
 
@@ -386,10 +387,80 @@ fn load_terms_file(path: &PathBuf) -> Result<Vec<String>> {
         .collect())
 }
 
+fn validate_ticket_source_config(cli: &Cli) -> Result<()> {
+    if cli.ticket_file.is_some() || cli.use_dummy_tickets {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "ticket source is required: pass --ticket-file <path> for issued tickets, \
+         or set --use-dummy-tickets / CLIENT_USE_DUMMY_TICKETS=true for local development"
+    )
+}
+
+fn build_ticket_source(cli: &Cli) -> Result<std::sync::Arc<dyn TicketSource>> {
+    if let Some(path) = &cli.ticket_file {
+        return Ok(std::sync::Arc::new(FileTicketSource::load(path.clone())?));
+    }
+
+    if cli.use_dummy_tickets {
+        warn!("using development-only dummy tickets; configure --ticket-file for production usage");
+        return Ok(std::sync::Arc::new(tickets::DummyTicketSource::default()));
+    }
+
+    validate_ticket_source_config(cli)?;
+    unreachable!("ticket source validation should reject missing sources")
+}
+
 fn parse_b64_32(s: &str) -> Result<[u8; 32]> {
     let bytes = B64.decode(s).context("invalid base64")?;
     let arr: [u8; 32] = bytes
         .try_into()
         .map_err(|_| anyhow::anyhow!("expected 32 bytes"))?;
     Ok(arr)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    const PUBLIC_KEY_B64: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+    fn parse_cli(extra: &[&str]) -> Cli {
+        let mut args = vec![
+            "zk_llm_client",
+            "--gateway-public-key-b64",
+            PUBLIC_KEY_B64,
+            "--endpoint-url",
+            "http://127.0.0.1:8081/relay",
+            "--user",
+            "hello",
+        ];
+        args.extend_from_slice(extra);
+        Cli::parse_from(args)
+    }
+
+    #[test]
+    fn ticket_source_requires_file_or_explicit_dummy_opt_in() {
+        let cli = parse_cli(&[]);
+
+        let err = validate_ticket_source_config(&cli).unwrap_err();
+        assert!(err.to_string().contains("--ticket-file"));
+        assert!(err.to_string().contains("--use-dummy-tickets"));
+    }
+
+    #[test]
+    fn ticket_source_accepts_explicit_dummy_opt_in() {
+        let cli = parse_cli(&["--use-dummy-tickets"]);
+
+        validate_ticket_source_config(&cli).expect("dummy tickets are explicitly allowed");
+    }
+
+    #[test]
+    fn ticket_source_accepts_file_source() {
+        let cli = parse_cli(&["--ticket-file", "./tickets.json"]);
+
+        validate_ticket_source_config(&cli).expect("ticket file source is allowed");
+    }
 }

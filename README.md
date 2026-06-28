@@ -154,9 +154,12 @@ cargo run -p zk_llm_client -- \
   --token-class c2048 \
   --session-file "./sessions/demo.session.json" \
   --system "You are a helpful assistant." \
+  --use-dummy-tickets \
   --repl
 
 ```
+
+The client requires a real ticket file by default. The `--use-dummy-tickets` flag is only for the local dummy-verifier quickstart; production clients should pass `--ticket-file ./tickets.json` instead.
 
 Inside the REPL you can type messages normally, and also use:
 
@@ -175,6 +178,7 @@ cargo run -p zk_llm_client -- \
   --model "gpt-4o-mini" \
   --token-class c2048 \
   --session-file "./sessions/demo.session.json" \
+  --use-dummy-tickets \
   --http-listen-addr 127.0.0.1:8090
 ```
 
