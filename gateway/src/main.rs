@@ -57,6 +57,17 @@ struct Cli {
     #[arg(long, env = "GATEWAY_ALLOW_DUMMY_VERIFIER", default_value_t = false)]
     allow_dummy_verifier: bool,
 
+    /// Allow the insecure dummy verifier to bind non-loopback addresses for local Docker demos.
+    ///
+    /// This is still dev-only. It exists so a container can listen on its Docker bridge interface
+    /// while the host publishes the port on localhost.
+    #[arg(
+        long,
+        env = "GATEWAY_ALLOW_DUMMY_NON_LOOPBACK_LOCAL_DEMO",
+        default_value_t = false
+    )]
+    allow_dummy_non_loopback_local_demo: bool,
+
     /// Which ZK verifier to use.
     /// - dummy: insecure, dev-only
     /// - halo2: Halo2/Plonk verifier (skeleton; circuit-specific)
@@ -161,11 +172,19 @@ async fn main() -> Result<()> {
         "GATEWAY_ZK_VERIFIER is required. Use halo2 in production; dummy is local development only",
     )?;
 
-    if matches!(zk_verifier, ZkVerifierKind::Dummy) && !addr.ip().is_loopback() {
+    if matches!(zk_verifier, ZkVerifierKind::Dummy)
+        && !is_dummy_bind_allowed(addr, cli.allow_dummy_non_loopback_local_demo)
+    {
         return Err(anyhow::anyhow!(
             "refusing to bind {} with insecure dummy verifier; use a loopback listen address or configure a real verifier",
             addr
         ));
+    }
+    if matches!(zk_verifier, ZkVerifierKind::Dummy)
+        && cli.allow_dummy_non_loopback_local_demo
+        && !addr.ip().is_loopback()
+    {
+        warn!("USING INSECURE DUMMY VERIFIER ON NON-LOOPBACK BIND FOR LOCAL DOCKER DEMO ONLY");
     }
 
     let db = sled::open(&cli.db_path).context("failed to open sled db")?;
@@ -267,6 +286,10 @@ fn cors_layer(allowed_origins: &str) -> Result<CorsLayer> {
         .allow_origin(AllowOrigin::list(origins))
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers([CONTENT_TYPE, AUTHORIZATION]))
+}
+
+fn is_dummy_bind_allowed(addr: SocketAddr, allow_non_loopback_local_demo: bool) -> bool {
+    addr.ip().is_loopback() || allow_non_loopback_local_demo
 }
 
 #[derive(Debug, Serialize)]
@@ -831,15 +854,34 @@ fn now_ms_u64() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_nullifier_value, encode_nullifier_value, mark_nullifier_spent, reserve_nullifier,
-        ReserveError,
+        decode_nullifier_value, encode_nullifier_value, is_dummy_bind_allowed,
+        mark_nullifier_spent, reserve_nullifier, ReserveError,
     };
+    use std::net::SocketAddr;
 
     fn temporary_db() -> sled::Db {
         sled::Config::new()
             .temporary(true)
             .open()
             .expect("temporary sled db")
+    }
+
+    #[test]
+    fn dummy_verifier_bind_policy_allows_loopback() {
+        let addr: SocketAddr = "127.0.0.1:8080".parse().expect("socket addr");
+        assert!(is_dummy_bind_allowed(addr, false));
+    }
+
+    #[test]
+    fn dummy_verifier_bind_policy_rejects_non_loopback_by_default() {
+        let addr: SocketAddr = "0.0.0.0:8080".parse().expect("socket addr");
+        assert!(!is_dummy_bind_allowed(addr, false));
+    }
+
+    #[test]
+    fn dummy_verifier_bind_policy_allows_non_loopback_with_local_demo_override() {
+        let addr: SocketAddr = "0.0.0.0:8080".parse().expect("socket addr");
+        assert!(is_dummy_bind_allowed(addr, true));
     }
 
     #[test]

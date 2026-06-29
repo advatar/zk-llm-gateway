@@ -1,0 +1,34 @@
+FROM rust:1-bookworm AS builder
+
+WORKDIR /src
+
+COPY Cargo.toml Cargo.lock ./
+COPY common ./common
+COPY client ./client
+COPY gateway ./gateway
+COPY relay ./relay
+COPY verifier_halo2 ./verifier_halo2
+
+RUN cargo build --locked --release -p zk_llm_gateway
+
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/* \
+  && useradd --uid 10001 --home /nonexistent --shell /usr/sbin/nologin --no-create-home gateway \
+  && mkdir -p /data \
+  && chown -R gateway:gateway /data
+
+COPY --from=builder /src/target/release/zk_llm_gateway /usr/local/bin/zk_llm_gateway
+
+USER gateway
+WORKDIR /data
+
+ENV GATEWAY_LISTEN_ADDR=0.0.0.0:8080
+ENV GATEWAY_DB_PATH=/data/gateway-db
+
+EXPOSE 8080
+HEALTHCHECK --interval=10s --timeout=3s --retries=6 CMD curl -fsS http://127.0.0.1:8080/healthz >/dev/null || exit 1
+
+ENTRYPOINT ["/usr/local/bin/zk_llm_gateway"]

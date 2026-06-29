@@ -120,6 +120,24 @@ cargo run -p zk_llm_gateway -- --zk-verifier dummy --listen-addr 127.0.0.1:8080
 
 Dummy verification is dev-only and the gateway refuses to bind a non-loopback address while it is active.
 
+For local Docker demos, the container has to listen on its Docker bridge interface. That requires an
+extra explicit opt-in and should only be used with the host port bound to localhost:
+
+```bash
+docker build -f Dockerfile.gateway -t zk-llm-gateway:local .
+docker run --rm \
+  -p 127.0.0.1:7080:8080 \
+  -e GATEWAY_SECRET_KEY_B64="$GATEWAY_SECRET_KEY_B64" \
+  -e GATEWAY_ZK_VERIFIER=dummy \
+  -e GATEWAY_ALLOW_DUMMY_VERIFIER=true \
+  -e GATEWAY_ALLOW_DUMMY_NON_LOOPBACK_LOCAL_DEMO=true \
+  -e PROVIDER_BASE_URL="http://host.docker.internal:6787" \
+  zk-llm-gateway:local
+```
+
+Do not set `GATEWAY_ALLOW_DUMMY_NON_LOOPBACK_LOCAL_DEMO=true` in production or on a publicly
+reachable listener.
+
 Halo2/Plonk skeleton (circuit-specific):
 
 ```bash

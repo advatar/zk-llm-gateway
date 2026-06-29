@@ -1,0 +1,11 @@
+.git
+.DS_Store
+target
+gateway-db
+sessions
+*.log
+VALIDATE.md
+zk-llm-gateway-python-sdk
+zk-llm-gateway-rust-sdk
+zk-llm-gateway-swift-sdk
+zk-llm-gateway-typescript-sdk

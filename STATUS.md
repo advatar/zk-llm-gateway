@@ -1,5 +1,19 @@
 # Status
 
+## Completed Task: Add container deployment support for local gateway demos
+
+- [completed] Add a Dockerfile for the `zk_llm_gateway` binary.
+- [completed] Add an explicit local-demo-only dummy verifier non-loopback guard for Docker bridge demos.
+- [completed] Add unit tests for the bind-policy guard.
+- [completed] Update README deployment notes.
+- [completed] Run local verification.
+  - GitHub issue: https://github.com/advatar/zk-llm-gateway/issues/9
+  - Verification:
+    - `cargo fmt --all`.
+    - `cargo test --workspace`.
+    - `docker build -f Dockerfile.gateway -t zk-llm-gateway:local .`.
+    - ZeroK laptop stack `./scripts/local-platform.sh smoke` with `zk-gateway` routed to VIR.
+
 ## Completed Task: Fix actionable placeholder review findings
 
 - [completed] Remove dummy-by-omission behavior from the CLI ticket source.
