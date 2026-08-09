@@ -1,5 +1,20 @@
 # Status
 
+## Active Task: Integrate Actum payment authorization and settlement evidence
+
+- [completed] Replace the production ZK-ticket assumption with a versioned Actum authorization verifier.
+- [completed] Bind paid inference authorization to the exact request, merchant audience, model, token class, and replay identity.
+- [completed] Add fail-closed HTTP verification, bounded evidence handling, and production-safe configuration.
+- [completed] Add positive, malformed, substitution, replay, and verifier-unavailable coverage.
+- [completed] Document and verify the Docker-local Actum-backed workflow.
+  - GitHub issue: https://github.com/advatar/zk-llm-gateway/issues/10
+  - ActiveChain service dependency: https://github.com/advatar/ActiveChain/issues/786
+  - Verification:
+    - `cargo fmt --all --check`.
+    - `cargo test --workspace`.
+    - ZeroK Docker images for `actum-verifier-dev` and `zk-gateway` build successfully.
+    - Encrypted client -> gateway -> Actum adapter -> VIR -> client smoke completes.
+
 ## Completed Task: Add container deployment support for local gateway demos
 
 - [completed] Add a Dockerfile for the `zk_llm_gateway` binary.

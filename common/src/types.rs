@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::token::TokenClass;
@@ -62,6 +63,47 @@ pub struct InferenceRequest {
     pub provider_options: HashMap<String, Value>,
 }
 
+impl InferenceRequest {
+    /// Computes the stable, domain-separated commitment an authorization must bind to.
+    ///
+    /// The ticket is deliberately excluded to avoid a circular commitment. JSON objects are
+    /// recursively sorted so HashMap iteration order cannot change the result across clients.
+    pub fn authorization_commitment(&self) -> Result<Vec<u8>, serde_json::Error> {
+        let mut value = serde_json::json!({
+            "request_id": self.request_id,
+            "model": self.model,
+            "messages": self.messages,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "stream": self.stream,
+            "token_class": self.token_class,
+            "provider_options": self.provider_options,
+        });
+        canonicalize_json(&mut value);
+        let encoded = serde_json::to_vec(&value)?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"ZEROK-ACTUM-INFERENCE-AUTHORIZATION-V1\0");
+        hasher.update((encoded.len() as u64).to_be_bytes());
+        hasher.update(encoded);
+        Ok(hasher.finalize().to_vec())
+    }
+}
+
+fn canonicalize_json(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            let mut entries: Vec<_> = std::mem::take(object).into_iter().collect();
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+            for (_, child) in &mut entries {
+                canonicalize_json(child);
+            }
+            object.extend(entries);
+        }
+        Value::Array(values) => values.iter_mut().for_each(canonicalize_json),
+        _ => {}
+    }
+}
+
 /// Response payload returned *inside* the encrypted envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferenceResponse {
@@ -108,5 +150,61 @@ where
         None | Some(Value::Null) => Ok(String::new()),
         Some(Value::String(s)) => Ok(s),
         Some(other) => serde_json::to_string(&other).map_err(serde::de::Error::custom),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::zk::{B64Bytes, ZkTicket};
+
+    fn request(provider_options: HashMap<String, Value>) -> InferenceRequest {
+        InferenceRequest {
+            request_id: Uuid::nil(),
+            model: "actum-test-model".into(),
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: "hello".into(),
+                extra: HashMap::new(),
+            }],
+            max_tokens: Some(128),
+            temperature: Some(0.5),
+            stream: None,
+            token_class: TokenClass::C512,
+            ticket: ZkTicket {
+                commitment_root: B64Bytes(vec![]),
+                nullifier: B64Bytes(vec![1]),
+                token_class: TokenClass::C512,
+                proof: B64Bytes(vec![2]),
+            },
+            provider_options,
+        }
+    }
+
+    #[test]
+    fn authorization_commitment_is_independent_of_map_insertion_order() {
+        let first = HashMap::from([
+            ("top_p".into(), Value::from(0.9)),
+            ("seed".into(), Value::from(7)),
+        ]);
+        let second = HashMap::from([
+            ("seed".into(), Value::from(7)),
+            ("top_p".into(), Value::from(0.9)),
+        ]);
+        assert_eq!(
+            request(first).authorization_commitment().unwrap(),
+            request(second).authorization_commitment().unwrap()
+        );
+    }
+
+    #[test]
+    fn authorization_commitment_changes_with_billable_request() {
+        let first = request(HashMap::new());
+        let mut second = request(HashMap::new());
+        second.model = "substituted-model".into();
+        assert_ne!(
+            first.authorization_commitment().unwrap(),
+            second.authorization_commitment().unwrap()
+        );
     }
 }

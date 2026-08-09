@@ -11,6 +11,7 @@ use zk_llm_common::{
     envelope::seal_request_for_gateway,
     token::TokenClass,
     types::{ChatMessage, GatewayEnvelopePayload, InferenceRequest},
+    zk::{B64Bytes, ZkTicket},
 };
 
 use crate::{
@@ -186,9 +187,7 @@ impl AgentRuntime {
             &self.prompt_cfg,
         );
 
-        let ticket = self.ticket_source.next_ticket(self.token_class)?;
-
-        let req = InferenceRequest {
+        let mut req = InferenceRequest {
             request_id: Uuid::new_v4(),
             model: self.model.clone(),
             messages: remote_messages,
@@ -196,9 +195,18 @@ impl AgentRuntime {
             temperature: None,
             stream: None,
             token_class: self.token_class,
-            ticket,
+            ticket: ZkTicket {
+                commitment_root: B64Bytes(Vec::new()),
+                nullifier: B64Bytes(Vec::new()),
+                token_class: self.token_class,
+                proof: B64Bytes(Vec::new()),
+            },
             provider_options: Default::default(),
         };
+        let request_commitment = req.authorization_commitment()?;
+        req.ticket = self
+            .ticket_source
+            .next_ticket(self.token_class, &request_commitment)?;
 
         let req_json = serde_json::to_vec(&req).context("serialize request")?;
         let (env, ctx) = seal_request_for_gateway(

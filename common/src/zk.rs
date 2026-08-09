@@ -1,4 +1,5 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 
@@ -60,8 +61,19 @@ pub enum ZkVerifyError {
 /// Verifies anonymous usage tickets.
 ///
 /// In production, implement this trait using your ZK proof system of choice.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct VerificationContext {
+    /// Domain-separated commitment to the exact inference request, excluding its ticket.
+    pub request_commitment: Vec<u8>,
+}
+
+#[async_trait]
 pub trait ZkVerifier: Send + Sync {
-    fn verify(&self, ticket: &ZkTicket) -> std::result::Result<VerifiedTicket, ZkVerifyError>;
+    async fn verify(
+        &self,
+        ticket: &ZkTicket,
+        context: &VerificationContext,
+    ) -> std::result::Result<VerifiedTicket, ZkVerifyError>;
 }
 
 /// A deliberately insecure verifier useful for wiring the gateway end-to-end.
@@ -70,8 +82,13 @@ pub trait ZkVerifier: Send + Sync {
 #[derive(Default)]
 pub struct DummyVerifier;
 
+#[async_trait]
 impl ZkVerifier for DummyVerifier {
-    fn verify(&self, ticket: &ZkTicket) -> std::result::Result<VerifiedTicket, ZkVerifyError> {
+    async fn verify(
+        &self,
+        ticket: &ZkTicket,
+        _context: &VerificationContext,
+    ) -> std::result::Result<VerifiedTicket, ZkVerifyError> {
         if ticket.nullifier.0.is_empty() {
             return Err(ZkVerifyError::InvalidProof);
         }
@@ -107,7 +124,8 @@ pub fn parse_ticket_json(json: &str) -> Result<ZkTicket> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_ticket_json, replay_key, sha256, B64Bytes, DummyVerifier, ZkTicket, ZkVerifier,
+        parse_ticket_json, replay_key, sha256, B64Bytes, DummyVerifier, VerificationContext,
+        ZkTicket, ZkVerifier,
     };
     use crate::token::TokenClass;
     use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
@@ -121,21 +139,37 @@ mod tests {
         }
     }
 
-    #[test]
-    fn dummy_verifier_accepts_minimal_valid_ticket() {
+    #[tokio::test]
+    async fn dummy_verifier_accepts_minimal_valid_ticket() {
         let verifier = DummyVerifier;
         let ticket = make_ticket(TokenClass::C512, vec![1u8, 2, 3], vec![7u8]);
 
-        let verified = verifier.verify(&ticket).expect("ticket should verify");
+        let verified = verifier
+            .verify(
+                &ticket,
+                &VerificationContext {
+                    request_commitment: vec![8; 32],
+                },
+            )
+            .await
+            .expect("ticket should verify");
         assert_eq!(verified.token_class, TokenClass::C512);
         assert_eq!(verified.nullifier_key, vec![1u8, 2, 3]);
     }
 
-    #[test]
-    fn dummy_verifier_rejects_empty_fields() {
+    #[tokio::test]
+    async fn dummy_verifier_rejects_empty_fields() {
         let verifier = DummyVerifier;
         let empty_nullifier = make_ticket(TokenClass::C256, vec![], vec![1u8]);
-        assert!(verifier.verify(&empty_nullifier).is_err());
+        assert!(verifier
+            .verify(
+                &empty_nullifier,
+                &VerificationContext {
+                    request_commitment: vec![8; 32]
+                }
+            )
+            .await
+            .is_err());
     }
 
     #[test]

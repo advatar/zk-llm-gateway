@@ -25,7 +25,7 @@ use crate::{
     prompt::PromptBuildConfig,
     redaction::{RedactMode, Redactor},
     session::{load_session, save_session, Session},
-    tickets::{FileTicketSource, TicketSource},
+    tickets::{ActumDevTicketSource, FileTicketSource, TicketSource},
 };
 
 #[derive(Parser, Debug)]
@@ -181,6 +181,10 @@ struct Cli {
     /// Use development-only dummy tickets when no ticket file is provided.
     #[arg(long, env = "CLIENT_USE_DUMMY_TICKETS", default_value_t = false)]
     use_dummy_tickets: bool,
+
+    /// Generate evidence for ZeroK's Docker-local Actum verifier fixture only.
+    #[arg(long, env = "CLIENT_USE_ACTUM_DEV_TICKETS", default_value_t = false)]
+    use_actum_dev_tickets: bool,
 
     /// Timeout (ms) for each HTTP request.
     #[arg(long, env = "CLIENT_TIMEOUT_MS", default_value_t = 120_000)]
@@ -388,13 +392,21 @@ fn load_terms_file(path: &PathBuf) -> Result<Vec<String>> {
 }
 
 fn validate_ticket_source_config(cli: &Cli) -> Result<()> {
-    if cli.ticket_file.is_some() || cli.use_dummy_tickets {
+    let configured = usize::from(cli.ticket_file.is_some())
+        + usize::from(cli.use_dummy_tickets)
+        + usize::from(cli.use_actum_dev_tickets);
+    if configured == 1 {
         return Ok(());
+    }
+
+    if configured > 1 {
+        anyhow::bail!("configure exactly one ticket source")
     }
 
     anyhow::bail!(
         "ticket source is required: pass --ticket-file <path> for issued tickets, \
-         or set --use-dummy-tickets / CLIENT_USE_DUMMY_TICKETS=true for local development"
+         --use-dummy-tickets for the legacy loopback demo, or --use-actum-dev-tickets for the \
+         Docker-local Actum fixture"
     )
 }
 
@@ -406,6 +418,11 @@ fn build_ticket_source(cli: &Cli) -> Result<std::sync::Arc<dyn TicketSource>> {
     if cli.use_dummy_tickets {
         warn!("using development-only dummy tickets; configure --ticket-file for production usage");
         return Ok(std::sync::Arc::new(tickets::DummyTicketSource::default()));
+    }
+
+    if cli.use_actum_dev_tickets {
+        warn!("using Docker-local Actum evidence; this is not canonical ActiveChain finality");
+        return Ok(std::sync::Arc::new(ActumDevTicketSource));
     }
 
     validate_ticket_source_config(cli)?;
@@ -462,5 +479,11 @@ mod tests {
         let cli = parse_cli(&["--ticket-file", "./tickets.json"]);
 
         validate_ticket_source_config(&cli).expect("ticket file source is allowed");
+    }
+
+    #[test]
+    fn ticket_source_accepts_actum_dev_source() {
+        let cli = parse_cli(&["--use-actum-dev-tickets"]);
+        validate_ticket_source_config(&cli).expect("Actum development source is explicit");
     }
 }

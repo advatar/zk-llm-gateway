@@ -3,10 +3,11 @@ use std::path::PathBuf;
 #[cfg(feature = "halo2")]
 use anyhow::Context;
 use anyhow::Result;
+use async_trait::async_trait;
 
 #[cfg(feature = "halo2")]
 use zk_llm_common::zk::replay_key;
-use zk_llm_common::zk::{VerifiedTicket, ZkTicket, ZkVerifier, ZkVerifyError};
+use zk_llm_common::zk::{VerificationContext, VerifiedTicket, ZkTicket, ZkVerifier, ZkVerifyError};
 
 /// Configuration for a Halo2/Plonk verifier.
 ///
@@ -94,8 +95,13 @@ impl Halo2PlonkVerifier {
     }
 }
 
+#[async_trait]
 impl ZkVerifier for Halo2PlonkVerifier {
-    fn verify(&self, ticket: &ZkTicket) -> std::result::Result<VerifiedTicket, ZkVerifyError> {
+    async fn verify(
+        &self,
+        ticket: &ZkTicket,
+        _context: &VerificationContext,
+    ) -> std::result::Result<VerifiedTicket, ZkVerifyError> {
         #[cfg(feature = "halo2")]
         {
             self.verify_halo2_proof(ticket)?;

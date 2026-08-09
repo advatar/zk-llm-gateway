@@ -12,6 +12,7 @@ halo2 = ["zk_llm_verifier_halo2/halo2"]
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 axum.workspace = true
 base64.workspace = true
 clap.workspace = true

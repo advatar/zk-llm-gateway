@@ -3009,6 +3009,7 @@ name = "zk_llm_common"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64",
  "bytes",
  "chacha20poly1305",
@@ -3018,6 +3019,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 1.0.69",
+ "tokio",
  "uuid",
  "x25519-dalek",
  "zeroize",
@@ -3028,6 +3030,7 @@ name = "zk_llm_gateway"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "base64",
  "clap",
@@ -3069,6 +3072,7 @@ name = "zk_llm_verifier_halo2"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "halo2_proofs",
  "serde",
  "serde_json",

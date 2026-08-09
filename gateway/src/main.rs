@@ -27,10 +27,13 @@ use uuid::Uuid;
 use zk_llm_common::{
     envelope::{open_request_at_gateway, seal_response_at_gateway, GatewayKeypair},
     types::{ErrorResponse, GatewayEnvelopePayload, InferenceRequest, InferenceResponse},
-    zk::{replay_key, DummyVerifier, ZkVerifier, ZkVerifyError},
+    zk::{replay_key, DummyVerifier, VerificationContext, ZkVerifier, ZkVerifyError},
 };
 
 use zk_llm_verifier_halo2::{Halo2PlonkVerifier, Halo2PlonkVerifierConfig};
+
+mod actum;
+use actum::ActumVerifier;
 
 #[derive(Parser, Debug)]
 #[command(name = "zk-llm-gateway")]
@@ -82,6 +85,30 @@ struct Cli {
     #[arg(long, env = "HALO2_PARAMS_PATH")]
     halo2_params_path: Option<String>,
 
+    /// Actum verifier endpoint implementing the actum.payment-finality.v1 contract.
+    #[arg(long, env = "ACTUM_VERIFIER_URL")]
+    actum_verifier_url: Option<String>,
+
+    /// Bearer credential used only between the gateway and Actum verifier.
+    #[arg(long, env = "ACTUM_VERIFIER_BEARER_TOKEN")]
+    actum_verifier_bearer_token: Option<String>,
+
+    /// Actum audience/merchant binding expected in payment authorization.
+    #[arg(long, env = "ACTUM_AUDIENCE")]
+    actum_audience: Option<String>,
+
+    /// Allow plain HTTP to the Actum verifier for an isolated Docker-local network.
+    #[arg(
+        long,
+        env = "ACTUM_ALLOW_INSECURE_HTTP_LOCAL_DEV",
+        default_value_t = false
+    )]
+    actum_allow_insecure_http_local_dev: bool,
+
+    /// Actum verification request timeout.
+    #[arg(long, env = "ACTUM_VERIFIER_TIMEOUT_MS", default_value_t = 10_000)]
+    actum_verifier_timeout_ms: u64,
+
     /// Upstream model provider base URL (OpenAI-compatible).
     #[arg(
         long,
@@ -130,6 +157,7 @@ struct Cli {
 enum ZkVerifierKind {
     Dummy,
     Halo2,
+    Actum,
 }
 
 #[tokio::main]
@@ -217,6 +245,22 @@ async fn main() -> Result<()> {
             );
             Arc::new(v)
         }
+        ZkVerifierKind::Actum => Arc::new(
+            ActumVerifier::new(
+                cli.actum_verifier_url
+                    .as_deref()
+                    .context("ACTUM_VERIFIER_URL is required when --zk-verifier actum")?,
+                cli.actum_verifier_bearer_token
+                    .clone()
+                    .context("ACTUM_VERIFIER_BEARER_TOKEN is required when --zk-verifier actum")?,
+                cli.actum_audience
+                    .clone()
+                    .context("ACTUM_AUDIENCE is required when --zk-verifier actum")?,
+                Duration::from_millis(cli.actum_verifier_timeout_ms),
+                cli.actum_allow_insecure_http_local_dev,
+            )
+            .context("init Actum verifier")?,
+        ),
     };
 
     let http = reqwest::Client::builder()
@@ -449,15 +493,27 @@ async fn infer_canonical(
         }
 
         // Verify ZK ticket
-        let _verified = state
+        let request_commitment = req.authorization_commitment().map_err(|_| {
+            EncryptedError::bad_request(
+                req.request_id,
+                "invalid_request",
+                "request cannot be committed",
+            )
+        })?;
+        let verified = state
             .verifier
-            .verify(&req.ticket)
+            .verify(&req.ticket, &VerificationContext { request_commitment })
+            .await
             .map_err(|e| map_zk_error(req.request_id, e))?;
 
         // Replay protection: reserve the nullifier before calling the provider.
         //
         // We keep a small "pending" state so a crash mid-request doesn't permanently brick a ticket.
-        let rkey = replay_key(&req.ticket);
+        let rkey = if verified.nullifier_key.is_empty() {
+            replay_key(&req.ticket)
+        } else {
+            verified.nullifier_key
+        };
         let pending_val = encode_nullifier_value(b'p', now_ms_u64());
         reserve_nullifier(
             &state.nullifier_db,

@@ -8,7 +8,7 @@ It implements the *plumbing* needed for a "ZK API usage credits"-style system:
 - **Encrypted envelopes** for relay-friendly transport (relay can't read prompts)
 - **Token-class quantization** + **padding** to reduce metadata leakage
 - **Replay protection** (nullifier DB)
-- A pluggable **ZK verifier trait** (dummy verifier in dev)
+- A pluggable authorization verifier with an **Actum finalized-payment profile** and a dummy verifier for local development
 - A **privacy relay** that forwards encrypted envelopes without leaking client IP to the gateway
 - A **personal-agent client** that keeps conversation state *locally* and minimizes/redacts context sent to the remote model
   - Interactive **REPL** mode for long chats
@@ -20,8 +20,9 @@ It implements the *plumbing* needed for a "ZK API usage credits"-style system:
   - A **prompt packer** that fits context into token-class budgets
   - A **redaction engine** that replaces sensitive strings with reversible placeholders
 
-> ⚠️ This is an MVP scaffolding. The repo ships a **dummy verifier** (dev only) and a **Halo2 verifier skeleton**
-> (circuit-specific) behind a feature flag.
+> The encrypted inference and Actum adapter paths fail closed. The repo still ships a **dummy
+> verifier** (dev only) and a legacy **Halo2 verifier skeleton**; neither is a production payment
+> authority.
 
 ---
 
@@ -148,6 +149,30 @@ export HALO2_VK_PATH="./path/to/verifying.key"
 cargo run -p zk_llm_gateway --features halo2 -- --zk-verifier halo2
 ```
 
+Production paid inference should use the Actum verifier profile:
+
+```bash
+export GATEWAY_ZK_VERIFIER=actum
+export ACTUM_VERIFIER_URL=https://actum-verifier.example/v1/verify-inference-authorization
+export ACTUM_VERIFIER_BEARER_TOKEN="..."
+export ACTUM_AUDIENCE="actum:merchant:zerok-production"
+cargo run -p zk_llm_gateway
+```
+
+The verifier endpoint consumes the `actum.payment-finality.v1` contract. The opaque ticket proof
+contains the canonical ActiveChain payment evidence owned by the Actum service. The gateway sends
+the expected audience, token class, replay identifier, and a domain-separated SHA-256 commitment
+to the exact decrypted inference request. A successful response must confirm finality, echo the
+request commitment and token class, and return the canonical Actum authorization identifier.
+
+Plain HTTP verifier URLs are rejected unless
+`ACTUM_ALLOW_INSECURE_HTTP_LOCAL_DEV=true` is explicitly set for an isolated local Docker network.
+Verifier unavailability, malformed responses, non-finalized evidence, binding substitutions, and
+oversized evidence all fail closed before the model provider is called.
+
+The complete transport and binding contract is documented in
+[`docs/ACTUM_VERIFIER_CONTRACT.md`](docs/ACTUM_VERIFIER_CONTRACT.md).
+
 Gateway endpoints:
 
 - `GET  /healthz`
@@ -178,6 +203,12 @@ cargo run -p zk_llm_client -- \
 ```
 
 The client requires a real ticket file by default. The `--use-dummy-tickets` flag is only for the local dummy-verifier quickstart; production clients should pass `--ticket-file ./tickets.json` instead.
+
+Against the ZeroK Docker-local Actum verifier fixture, use `--use-actum-dev-tickets`. This creates
+request-bound protocol fixtures after the exact inference request has been assembled. It is
+intentionally incompatible with production Actum finality and must never be enabled in a deployed
+client. Production clients obtain canonical payment evidence through the Actum payment SDK before
+submitting the encrypted request.
 
 Inside the REPL you can type messages normally, and also use:
 
