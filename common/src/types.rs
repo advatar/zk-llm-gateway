@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
+use sha3::{
+    digest::{ExtendableOutput, Update, XofReader},
+    Shake256,
+};
 use uuid::Uuid;
 
 use crate::token::TokenClass;
@@ -81,11 +84,13 @@ impl InferenceRequest {
         });
         canonicalize_json(&mut value);
         let encoded = serde_json::to_vec(&value)?;
-        let mut hasher = Sha256::new();
-        hasher.update(b"ZEROK-ACTUM-INFERENCE-AUTHORIZATION-V1\0");
-        hasher.update((encoded.len() as u64).to_be_bytes());
-        hasher.update(encoded);
-        Ok(hasher.finalize().to_vec())
+        let mut hasher = Shake256::default();
+        hasher.update(b"ACTIVECHAIN-ZEROK-INFERENCE-AUTHORIZATION-V1\0");
+        hasher.update(&(encoded.len() as u64).to_be_bytes());
+        hasher.update(&encoded);
+        let mut commitment = vec![0_u8; 48];
+        hasher.finalize_xof().read(&mut commitment);
+        Ok(commitment)
     }
 }
 

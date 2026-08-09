@@ -73,7 +73,7 @@ impl ZkVerifier for ActumVerifier {
         ticket: &ZkTicket,
         context: &VerificationContext,
     ) -> Result<VerifiedTicket, ZkVerifyError> {
-        if context.request_commitment.len() != 32
+        if context.request_commitment.len() != 48
             || ticket.commitment_root.0 != context.request_commitment
             || ticket.nullifier.0.is_empty()
             || ticket.proof.0.is_empty()
@@ -191,7 +191,7 @@ mod tests {
     #[tokio::test]
     async fn accepts_finalized_bound_authorization() {
         let (verifier, authorization_id) = test_verifier().await;
-        let commitment = vec![3; 32];
+        let commitment = vec![3; 48];
         let verified = verifier
             .verify(
                 &ticket(commitment.clone()),
@@ -210,9 +210,9 @@ mod tests {
         let (verifier, _) = test_verifier().await;
         let error = verifier
             .verify(
-                &ticket(vec![3; 32]),
+                &ticket(vec![3; 48]),
                 &VerificationContext {
-                    request_commitment: vec![4; 32],
+                    request_commitment: vec![4; 48],
                 },
             )
             .await
@@ -245,7 +245,7 @@ mod tests {
             true,
         )
         .unwrap();
-        let commitment = vec![3; 32];
+        let commitment = vec![3; 48];
         let error = verifier
             .verify(
                 &ticket(commitment.clone()),

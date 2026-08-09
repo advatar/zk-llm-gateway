@@ -17,7 +17,7 @@ Request:
 {
   "protocol": "actum.payment-finality.v1",
   "audience": "actum:merchant:zerok-production",
-  "request_commitment_b64": "<32 bytes>",
+  "request_commitment_b64": "<48-byte ActiveChain Digest384>",
   "replay_identifier_b64": "<bounded non-empty bytes>",
   "token_class": "c2048",
   "payment_evidence_b64": "<canonical Actum evidence bundle>"
@@ -66,10 +66,10 @@ The gateway recursively sorts JSON object keys and serializes this ticket-free r
 - token class;
 - provider options.
 
-It then computes SHA-256 over:
+It then computes SHAKE256 with 48 bytes of output over:
 
 ```text
-"ZEROK-ACTUM-INFERENCE-AUTHORIZATION-V1\0"
+"ACTIVECHAIN-ZEROK-INFERENCE-AUTHORIZATION-V1\0"
 || u64_be(json_length)
 || canonical_json
 ```

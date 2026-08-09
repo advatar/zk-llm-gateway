@@ -1,5 +1,17 @@
 # Status
 
+## Active Task: Align the Actum adapter with ActiveChain Digest384
+
+- [completed] Replace the temporary 32-byte request commitment with ActiveChain's 48-byte
+  Digest384 convention while preserving deterministic request binding.
+- [completed] Update clients, verifier response validation, tests, and the published adapter contract.
+- [completed] Qualify the gateway against the ActiveChain-owned verifier service and ZeroK Docker stack.
+  - GitHub issue: https://github.com/advatar/zk-llm-gateway/issues/11
+  - Verification:
+    - `cargo test --workspace`.
+    - ZeroK Docker images build with the ActiveChain-owned verifier service.
+    - Encrypted paid inference smoke completes through gateway -> ActiveChain -> VIR.
+
 ## Active Task: Integrate Actum payment authorization and settlement evidence
 
 - [completed] Replace the production ZK-ticket assumption with a versioned Actum authorization verifier.

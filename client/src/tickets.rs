@@ -49,8 +49,8 @@ pub struct ActumDevTicketSource;
 
 impl TicketSource for ActumDevTicketSource {
     fn next_ticket(&self, token_class: TokenClass, request_commitment: &[u8]) -> Result<ZkTicket> {
-        if request_commitment.len() != 32 {
-            anyhow::bail!("Actum request commitment must be 32 bytes")
+        if request_commitment.len() != 48 {
+            anyhow::bail!("Actum request commitment must be 48 bytes")
         }
         let mut replay_identifier = vec![0u8; 48];
         let mut authorization_id = vec![0u8; 48];
@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn actum_dev_ticket_binds_exact_request_commitment() {
-        let commitment = vec![3; 32];
+        let commitment = vec![3; 48];
         let ticket = ActumDevTicketSource
             .next_ticket(TokenClass::C512, &commitment)
             .unwrap();
