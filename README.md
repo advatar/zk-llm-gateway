@@ -24,6 +24,14 @@ It implements the *plumbing* needed for a "ZK API usage credits"-style system:
 > verifier** (dev only) and a legacy **Halo2 verifier skeleton**; neither is a production payment
 > authority.
 
+## Visual system guide
+
+The [ZeroK + `zk-llm-gateway` visual guide](https://github.com/advatar/ZeroK/blob/main/output/pdf/zerok-zk-llm-gateway-visual-guide.pdf)
+shows how the gateway fits into the wider ZeroK platform. It covers local-first context selection,
+encrypted envelopes, token-class shaping, request-bound Actum authorization, durable replay
+protection, VIR receipts, compatibility versus paid inference, and local-demo versus production
+trust boundaries.
+
 ---
 
 ## Repository layout

@@ -1,5 +1,17 @@
 # Status
 
+## Active Task: Publish the ZeroK visual system guide
+
+- [completed] Add a prominent README link to the canonical visual PDF in `advatar/ZeroK`.
+- [completed] Describe the architecture, privacy, Actum authorization, replay, VIR receipt, and trust-boundary coverage.
+- [completed] Validate the documentation-only change and consolidate it to `main`.
+  - GitHub issue: https://github.com/advatar/zk-llm-gateway/issues/12
+  - Verification:
+    - Root README relative links resolve.
+    - `git diff --check` passes.
+    - `cargo fmt --all --check` passes.
+    - `cargo test --workspace` passes all 29 tests.
+
 ## Active Task: Align the Actum adapter with ActiveChain Digest384
 
 - [completed] Replace the temporary 32-byte request commitment with ActiveChain's 48-byte
