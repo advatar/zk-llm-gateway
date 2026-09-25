@@ -1,0 +1,9 @@
+format: cargo fmt --all -- --check
+test: cargo test --workspace
+strict_lint: cargo clippy --workspace --all-targets --all-features -- -D warnings
+focused_adapter_test: cargo test -p zk_llm_gateway actum::tests
+local_paid_example: cargo run --locked -p zk_llm_client --example local_paid_smoke
+# Environment: LOCAL_GATEWAY_URL, LOCAL_VIR_URL, LOCAL_ACTUM_URL,
+# LOCAL_VIR_API_KEY, ACTUM_VERIFIER_BEARER_TOKEN. URLs must be loopback.
+# LOCAL_EXPECT_VERIFIER_UNAVAILABLE=true tests only an intentional verifier outage.
+# ZeroK scripts/local-platform.sh smoke-paid owns fixture lifecycle and receipt counts.

@@ -112,7 +112,9 @@ substitute current SDK main. SDK suites were not run: no SDK/API behavior change
 
 Workspace tests do not substitute for the required ZeroK + gateway smoke, replay
 second-use refusal, negative authorization matrix or VIR receipt qualification.
-The overall cleanup remains blocked by ZeroK caller/authentication inventory.
+The continuation retains a thin ZeroK authentication facade and retires compromised
+historical deployment state. Local qualification now uses the dedicated
+[paid-path example](LOCAL_QUALIFICATION.md); production/SDK assurance remains separate.
 
 The existing [#13](https://github.com/advatar/zk-llm-gateway/issues/13) and
 [draft PR #15](https://github.com/advatar/zk-llm-gateway/pull/15) already track

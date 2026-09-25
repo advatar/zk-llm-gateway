@@ -134,3 +134,10 @@ Issues #16/#17; documentation PR #18. Reviewed/tested code candidate
   found only the existing README `CLIENT_HTTP_API_KEY` placeholder (`change-me`),
   manually confirmed as an example, not a credential; no credential finding
   remains. No gateway CI checks were reported on foundation PR #18.
+
+## 2026-09-25 — local qualification continuation in progress
+
+Add a reference-client example for the maintained ZeroK local paid smoke using
+common envelope/commitment code and existing Actum dev tickets. Prove same-ticket
+second-use refusal plus local negative bindings, without changing replay policy.
+#13/#15 security implementation remains separate/unmerged; no SDK pin changes.

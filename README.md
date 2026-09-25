@@ -354,3 +354,9 @@ export LOCAL_SUMMARIZER_MODEL="llama-3.1-8b"
 3. Add better **local summarization** / **RAG** in the client (local model)
 4. Add padding strategies for inference metadata (token budget classes, optional minimum response times)
 5. Consider TEEs/confidential inference if you want to reduce trust in gateway/provider infrastructure
+
+## Local qualification
+
+The [paid-path qualification example](docs/LOCAL_QUALIFICATION.md) exercises local
+Actum binding, encrypted response handling, VIR receipt verification and same-ticket
+replay refusal. It is development-only and independent of reference memory policy.

@@ -257,4 +257,78 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, ZkVerifyError::Internal(_)));
     }
+    #[tokio::test]
+    async fn invalid_verifier_responses_fail_closed() {
+        // These are contract checks, not an independent finality implementation.
+        let good = json!({"authorized":true, "finalized":true,
+            "request_commitment_b64":B64.encode(vec![3;48]),
+            "authorization_id_b64":B64.encode(vec![4;48]), "token_class":"c512"});
+        let mut cases = vec![json!({}), json!("malformed")];
+        for (field, value) in [
+            ("authorized", json!(false)),
+            ("finalized", json!(false)),
+            ("token_class", json!("c2048")),
+            ("request_commitment_b64", json!(B64.encode(vec![8; 48]))),
+            ("authorization_id_b64", json!("")),
+        ] {
+            let mut body = good.clone();
+            body[field] = value;
+            cases.push(body);
+        }
+        for body in cases {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let app = Router::new().route(
+                "/verify",
+                post(move || {
+                    let body = body.clone();
+                    async move { Json(body) }
+                }),
+            );
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let verifier = ActumVerifier::new(
+                &format!("http://{address}/verify"),
+                "fixture-only".into(),
+                "application:test".into(),
+                Duration::from_secs(1),
+                true,
+            )
+            .unwrap();
+            assert!(verifier
+                .verify(
+                    &ticket(vec![3; 48]),
+                    &VerificationContext {
+                        request_commitment: vec![3; 48]
+                    }
+                )
+                .await
+                .is_err());
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_or_missing_evidence_refused_before_network() {
+        let verifier = ActumVerifier::new(
+            "http://127.0.0.1:1/never-called",
+            "fixture-only".into(),
+            "application:test".into(),
+            Duration::from_secs(1),
+            true,
+        )
+        .unwrap();
+        for proof in [vec![], vec![0; MAX_ACTUM_EVIDENCE_BYTES + 1]] {
+            let mut input = ticket(vec![3; 48]);
+            input.proof = B64Bytes(proof);
+            let result = verifier
+                .verify(
+                    &input,
+                    &VerificationContext {
+                        request_commitment: vec![3; 48],
+                    },
+                )
+                .await;
+            assert!(matches!(result, Err(ZkVerifyError::InvalidProof)));
+        }
+    }
 }
