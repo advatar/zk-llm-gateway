@@ -1,0 +1,32 @@
+version: 1
+scope: gateway KCF-08 continuation; not the full portfolio inventory
+service:
+  name: zk_llm_gateway
+  owner: gateway/
+  default_listen: 0.0.0.0:8080
+  liveness: /healthz
+  liveness_is_production_readiness: false
+  public_key: /v1/pubkey
+  inference: /v1/infer
+  compatibility:
+    routes: [/v1/models, /v1/chat/completions]
+    enabled_by_default: false
+    flag: GATEWAY_ENABLE_COMPAT_LOCAL_DEMO
+    allowed_verifier: dummy
+    purpose: isolated local development only
+  provider:
+    redirects: disabled
+    environment_proxies: disabled
+    response_reads: byte_bounded
+  replay:
+    backend: local_sled
+    pending_auto_expiry: false
+    legacy_ttl_setting: accepted_but_ignored
+    error_release: false
+    distributed_guarantee: not_qualified
+qualification:
+  native_gateway_tests: blocked_cargo_unavailable
+  python_rust_conformance: blocked_cargo_unavailable
+  real_finality: not_evaluated
+  confidential_execution: not_evaluated
+reference: docs/kcf/ADMISSION_HARDENING.md
