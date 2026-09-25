@@ -1,7 +1,8 @@
 # ZK LLM Gateway (Rust)
 
-This is a Rust workspace that scaffolds a **privacy-preserving API gateway** for LLM inference,
-with a client designed for the **long-running personal agent** use case.
+`zk-llm-gateway` is a reusable inference security boundary. Products, including
+ZeroK, consume its API/SDKs without making their account or context systems part
+of the protocol. The workspace also includes an optional reference personal-agent client.
 
 It implements the *plumbing* needed for a "ZK API usage credits"-style system:
 
@@ -39,6 +40,32 @@ Ownership is intentionally split:
 The `client/` REPL, session file, local memory, retrieval, redaction and summarization are a **reference client** demonstrating local-first selective disclosure. They are useful conveniences, but they are not required by the gateway wire protocol and should not become a dependency of the server-side security boundary.
 
 The current `ACTIVECHAIN-ZEROK-...` domain separation and ZeroK-local development fixtures are protocol/history compatibility surfaces. This documentation cleanup does not rename or weaken them.
+
+## Independent application consumption
+
+An application can use a protocol SDK and gateway endpoint without ZeroK accounts,
+UI, LiveKit, databases or deployment stack:
+
+```text
+application -> SDK -> optional relay -> gateway /v1/infer
+                                         |-- Actum: exact-request authorization
+                                         +-- VIR/provider: execution and evidence
+```
+
+The application selects bounded context and a model, obtains evidence bound to
+that exact request under its configured merchant audience, and uses the SDK to
+construct/decrypt envelopes. The deployment selects the Actum verifier and
+VIR/provider assurance policy; no upstream memory system is required.
+
+For an intentionally non-paid compatibility call, a trusted server-side product
+proxy can instead send OpenAI messages to `/v1/chat/completions`. That route does
+**not** enforce incoming bearer authentication, encrypted envelopes, Actum
+payment authorization or replay protection. Keep it behind the application's
+explicit authentication/ingress boundary. Do not use it as a fallback after a
+protected request fails. Gateway provider credentials are deployment-side secrets.
+
+See the [reference-client evaluation](docs/REFERENCE_CLIENT_BOUNDARY.md) for module
+classification, SDK pins, dependency evidence and the fresh-clone SDK limitation.
 
 ## Visual system guide
 

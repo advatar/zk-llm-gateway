@@ -97,3 +97,40 @@
 - [completed] Run `swift test` in `zk-llm-gateway-swift-sdk` and commit the scoped SDK fix.
   - Verification:
     - `swift test` in `zk-llm-gateway-swift-sdk` passed 14 tests.
+
+## 2026-09-25 — product-neutral boundary evaluation
+
+Issues #16/#17; documentation PR #18. Reviewed/tested code candidate
+`201feba722f9190c8685faa1473731627a47e8ac`, based on main
+`e4b31b449211906f31f1d529c4257388627ba5aa`; subsequent changes are documentation only.
+
+- **REFERENCE_CLIENT_POLICY_BOUNDARY_ACCEPTABLE**: server/common/relay do not
+  depend on `client`; memory/RAG/session/summary remain optional reference policy,
+  redaction remains local privacy support. No extraction/refactor needed.
+- **PRODUCT_COUPLING = 0** for reviewed production server dependencies; historical
+  domain separators, local fixtures, test audiences and relay documentation
+  examples retained. Runtime/API/Actum/VIR/SDK pins unchanged.
+- Added [module/SDK inventory](docs/REFERENCE_CLIENT_BOUNDARY.md) and independent
+  application example; explicitly distinguish unauthenticated gateway compatibility
+  route from product auth and protected authorization.
+- `cargo test --workspace`: **29 passed**, 0 failed, 0 ignored (client 5,
+  common 11, envelope integration 4, gateway 9; other targets/doc-tests 0).
+  Default nightly reported existing unused workspace dependencies (`http`,
+  `hyper`, `tower`) and common `bytes` dependency warnings.
+- Default `cargo fmt --all -- --check` could not run because nightly rustfmt was
+  absent. `cargo +1.97.1 fmt --all -- --check` **passed** using installed tooling.
+  Clippy/SDK suites not run: no production/protocol/SDK source changed.
+- Fresh SDK initialization failed: Python remote did not serve pinned
+  `20d08bb7af1853db4d6c31067750025c0909672c`. Exact pins were recovered for
+  inspection from the original local object stores; pointers unchanged. Remote
+  reproducibility remains unresolved and belongs with #13's SDK qualification.
+- **INFERENCE_BOUNDARY_CLEANUP_BLOCKED** overall: ZeroK #55 has an unknown
+  JobQueue caller and ai-caller authentication migration boundary. No combined
+  stack/paid/replay/VIR qualification was run. No production assurance, deployment,
+  merge or SDK interoperability improvement is claimed.
+- Existing #13 / PR #15 security-conformance work is separate and unmerged;
+  this evaluation does not supersede or duplicate it.
+- Changed-document relative links and `git diff --check` passed. `detect-secrets`
+  found only the existing README `CLIENT_HTTP_API_KEY` placeholder (`change-me`),
+  manually confirmed as an example, not a credential; no credential finding
+  remains. No gateway CI checks were reported on foundation PR #18.
