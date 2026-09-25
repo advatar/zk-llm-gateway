@@ -1,0 +1,17 @@
+version: 1
+scope: gateway KCF-08 admission and SDK interoperability
+commands:
+  format_check: cargo fmt --all --check
+  admission_tests: "cargo test --locked -p zk_llm_gateway admission_tests:: -- --test-threads=1"
+  workspace_tests: cargo test --locked --workspace
+  python_rust_conformance: python3 scripts/qualify_python_v2.py --sdk-dir ../zk-llm-gateway-python-sdk
+  qualifier_tests: python3 -m unittest discover -s scripts/tests -v
+prerequisites:
+  - full pinned repository checkouts
+  - approved development host with Cargo and Python dependencies
+  - matching prepared-v2 Python SDK draft revision
+claims:
+  unavailable_tooling: blocked_not_pass
+  fixture_authorization: synthetic_not_finality
+  liveness: not_production_readiness
+  deployment: not_authorized_by_test_success

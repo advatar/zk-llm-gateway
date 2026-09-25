@@ -2,7 +2,7 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use axum::{
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{
         header::{AUTHORIZATION, CONTENT_TYPE},
         HeaderValue, Method, StatusCode,
@@ -13,7 +13,7 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use clap::{Parser, ValueEnum};
-use log::{error, info, warn};
+use log::{info, warn};
 use rand::Rng;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -34,6 +34,12 @@ use zk_llm_verifier_halo2::{Halo2PlonkVerifier, Halo2PlonkVerifierConfig};
 
 mod actum;
 use actum::ActumVerifier;
+
+mod admission;
+use admission::{check_envelope_size, check_request, read_bounded_body};
+
+#[cfg(test)]
+mod admission_tests;
 
 #[derive(Parser, Debug)]
 #[command(name = "zk-llm-gateway")]
@@ -70,6 +76,11 @@ struct Cli {
         default_value_t = false
     )]
     allow_dummy_non_loopback_local_demo: bool,
+
+    /// Enable unpaid compatibility routes for isolated dummy-verifier demos only.
+    /// Never allowed with Actum or Halo2. Off by default, including Docker demos.
+    #[arg(long, env = "GATEWAY_ENABLE_COMPAT_LOCAL_DEMO", default_value_t = false)]
+    enable_compat_local_demo: bool,
 
     /// Which ZK verifier to use.
     /// - dummy: insecure, dev-only
@@ -137,9 +148,8 @@ struct Cli {
     #[arg(long, env = "PRIVACY_MIN_RESPONSE_DELAY_MS", default_value_t = 250)]
     privacy_min_response_delay_ms: u64,
 
-    /// How long a "pending" nullifier reservation may live before being considered stale.
-    ///
-    /// This lets clients retry if the gateway crashes mid-request.
+    /// Deprecated compatibility setting; ignored. Reservations no longer expire.
+    /// A timeout or process failure cannot establish that provider work did not happen.
     #[arg(long, env = "NULLIFIER_PENDING_TTL_MS", default_value_t = 300_000)]
     nullifier_pending_ttl_ms: u64,
 
@@ -197,7 +207,7 @@ async fn main() -> Result<()> {
         .context("invalid GATEWAY_LISTEN_ADDR")?;
 
     let zk_verifier = cli.zk_verifier.context(
-        "GATEWAY_ZK_VERIFIER is required. Use halo2 in production; dummy is local development only",
+        "GATEWAY_ZK_VERIFIER is required. Actum delegates payment verification; halo2 is a rejecting skeleton and dummy is development only",
     )?;
 
     if matches!(zk_verifier, ZkVerifierKind::Dummy)
@@ -213,6 +223,19 @@ async fn main() -> Result<()> {
         && !addr.ip().is_loopback()
     {
         warn!("USING INSECURE DUMMY VERIFIER ON NON-LOOPBACK BIND FOR LOCAL DOCKER DEMO ONLY");
+    }
+
+    if !is_compat_mode_allowed(
+        cli.enable_compat_local_demo,
+        zk_verifier,
+        cli.allow_dummy_verifier,
+        addr,
+        cli.allow_dummy_non_loopback_local_demo,
+    ) {
+        anyhow::bail!("compatibility routes require an explicitly enabled isolated dummy-verifier demo");
+    }
+    if cli.enable_compat_local_demo {
+        warn!("UNPAID COMPATIBILITY ROUTES ENABLED FOR ISOLATED LOCAL DEMO ONLY");
     }
 
     let db = sled::open(&cli.db_path).context("failed to open sled db")?;
@@ -263,10 +286,7 @@ async fn main() -> Result<()> {
         ),
     };
 
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_millis(cli.provider_timeout_ms))
-        .build()
-        .context("failed to build reqwest client")?;
+    let http = provider_http_client(Duration::from_millis(cli.provider_timeout_ms))?;
 
     let state = Arc::new(AppState {
         keypair,
@@ -278,19 +298,14 @@ async fn main() -> Result<()> {
         privacy_jitter_ms: cli.privacy_jitter_ms,
         privacy_min_response_delay_ms: cli.privacy_min_response_delay_ms,
         nullifier_pending_ttl_ms: cli.nullifier_pending_ttl_ms,
+        compatibility_enabled: cli.enable_compat_local_demo,
     });
 
     let cors = cors_layer(&cli.cors_allowed_origins)?;
 
-    let app = Router::new()
-        .route("/healthz", get(healthz))
-        .route("/v1/pubkey", get(pubkey))
-        .route("/v1/models", get(compat_models))
-        .route("/v1/chat/completions", post(compat_chat_completions))
-        .route("/v1/infer", post(infer))
+    let app = build_router(state)
         .layer(cors)
-        .layer(TraceLayer::new_for_http())
-        .with_state(state);
+        .layer(TraceLayer::new_for_http());
 
     info!("listening on {}", addr);
 
@@ -304,6 +319,44 @@ async fn main() -> Result<()> {
         .context("server error")?;
 
     Ok(())
+}
+
+fn provider_http_client(timeout: Duration) -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .build()
+        .context("failed to build provider client")
+}
+
+fn build_router(state: Arc<AppState>) -> Router {
+    let mut router = Router::new()
+        .route("/healthz", get(healthz))
+        .route("/v1/pubkey", get(pubkey))
+        .route("/v1/infer", post(infer));
+    if state.compatibility_enabled {
+        router = router
+            .route("/v1/models", get(compat_models))
+            .route("/v1/chat/completions", post(compat_chat_completions));
+    }
+    // Largest v2 class is 68 KiB before AEAD/base64 plus small envelope fields.
+    router
+        .layer(DefaultBodyLimit::max(128 * 1024))
+        .with_state(state)
+}
+
+fn is_compat_mode_allowed(
+    enabled: bool,
+    verifier: ZkVerifierKind,
+    allow_dummy: bool,
+    addr: SocketAddr,
+    allow_docker_demo: bool,
+) -> bool {
+    !enabled
+        || (matches!(verifier, ZkVerifierKind::Dummy)
+            && allow_dummy
+            && is_dummy_bind_allowed(addr, allow_docker_demo))
 }
 
 async fn shutdown_signal() {
@@ -364,9 +417,14 @@ async fn compat_proxy(
     path: &str,
     body: Option<Value>,
 ) -> Response {
+    // Defense in depth: a future internal caller must not bypass route registration.
+    if !state.compatibility_enabled {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let mut builder = state
         .http
-        .request(method, provider_url(&state.provider_base_url, path));
+        .request(method, provider_url(&state.provider_base_url, path))
+        .header(reqwest::header::ACCEPT_ENCODING, "identity");
     if let Some(key) = &state.provider_api_key {
         builder = builder.bearer_auth(key);
     }
@@ -391,7 +449,11 @@ async fn compat_proxy(
     };
 
     let status = resp.status();
-    let bytes = match resp.bytes().await {
+    if !status.is_success() {
+        return (StatusCode::BAD_GATEWAY, Json(json!({"error": {"code": "upstream_error"}})))
+            .into_response();
+    }
+    let bytes = match read_bounded_body(resp, 128 * 1024).await {
         Ok(bytes) => bytes,
         Err(_) => {
             return (
@@ -410,10 +472,8 @@ async fn compat_proxy(
     match serde_json::from_slice::<Value>(&bytes) {
         Ok(value) => (status, Json(value)).into_response(),
         Err(_) => (
-            status,
-            Json(json!({
-                "raw": String::from_utf8_lossy(&bytes),
-            })),
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error": {"code": "upstream_parse"}})),
         )
             .into_response(),
     }
@@ -429,6 +489,7 @@ struct AppState {
     privacy_jitter_ms: u64,
     privacy_min_response_delay_ms: u64,
     nullifier_pending_ttl_ms: u64,
+    compatibility_enabled: bool,
 }
 
 /// Envelope request handler.
@@ -439,12 +500,28 @@ async fn infer(
     Json(env): Json<zk_llm_common::envelope::Envelope>,
 ) -> Result<Json<zk_llm_common::envelope::Envelope>, ApiError> {
     let started = std::time::Instant::now();
-    // Step 1: decrypt. If we can't decrypt, we cannot respond encrypted.
+    // Malformed unauthenticated envelopes get only categorical public errors.
+    check_envelope_size(&env).map_err(|code| {
+        ApiError::bad_request(None, code, "invalid encrypted envelope".to_string())
+    })?;
     let plaintext = open_request_at_gateway(&state.keypair, &env)
-        .map_err(|e| ApiError::bad_request(None, "decrypt_failed", format!("{}", e)))?;
+        .map_err(|_| ApiError::bad_request(None, "decrypt_failed", "invalid encrypted envelope".to_string()))?;
 
-    let req: InferenceRequest = serde_json::from_slice(&plaintext)
-        .map_err(|e| ApiError::bad_request(None, "invalid_json", format!("{}", e)))?;
+    let req: InferenceRequest = match serde_json::from_slice(&plaintext) {
+        Ok(request) => request,
+        Err(_) => {
+            let payload = GatewayEnvelopePayload::Err {
+                error: ErrorResponse {
+                    request_id: Some(env.request_id),
+                    code: "invalid_request".into(),
+                    message: "invalid inference request".into(),
+                },
+            };
+            let encoded = serde_json::to_vec(&payload)
+                .map_err(|_| ApiError::internal(Some(env.request_id), "internal error".into()))?;
+            return finalize_encrypted_response(&state, &env, encoded, started, Some(env.request_id)).await;
+        }
+    };
 
     infer_canonical(state, env, req, started).await
 }
@@ -457,6 +534,10 @@ async fn infer_canonical(
 ) -> Result<Json<zk_llm_common::envelope::Envelope>, ApiError> {
     // From here on, we can return encrypted errors.
     let result: Result<ProviderChatCompletionResult, EncryptedError> = async {
+        // Exact request and option policy before verifier, spend or provider I/O.
+        check_request(&env, &req).map_err(|code| {
+            EncryptedError::bad_request(env.request_id, code, "request policy rejected")
+        })?;
         // Consistency checks to reduce cross-protocol confusion
         if req.token_class != env.token_class {
             return Err(EncryptedError::bad_request(
@@ -506,9 +587,14 @@ async fn infer_canonical(
             .await
             .map_err(|e| map_zk_error(req.request_id, e))?;
 
-        // Replay protection: reserve the nullifier before calling the provider.
-        //
-        // We keep a small "pending" state so a crash mid-request doesn't permanently brick a ticket.
+        if verified.token_class != req.token_class {
+            return Err(EncryptedError::payment_required(
+                req.request_id, "verified_class_mismatch", "authorization class mismatch",
+            ));
+        }
+
+        // Durably reserve before dispatch. Pending state is an uncertain outcome,
+        // not permission to retry after a TTL. It requires external reconciliation.
         let rkey = if verified.nullifier_key.is_empty() {
             replay_key(&req.ticket)
         } else {
@@ -525,24 +611,14 @@ async fn infer_canonical(
             ReserveError::AlreadyUsed => EncryptedError::payment_required(
                 req.request_id,
                 "double_spend",
-                "ticket nullifier already used",
+                "ticket reserved or consumed; outcome may be unknown",
             ),
             ReserveError::Db => EncryptedError::internal(req.request_id, "db error"),
         })?;
 
-        // Forward request to provider
-        let provider_response = match call_provider(&state, &req).await {
-            Ok(response) => response,
-            Err(e) => {
-                // Best-effort: release this exact pending reservation to allow retry.
-                if let Err(err) =
-                    release_pending_nullifier(&state.nullifier_db, &rkey, &pending_val)
-                {
-                    warn!("failed to release pending nullifier: {:?}", err);
-                }
-                return Err(e);
-            }
-        };
+        // Once reserved, no error path deletes the entry. Even a network error
+        // may occur after the provider accepted the request.
+        let provider_response = call_provider(&state, &req).await?;
 
         // Mark as spent.
         let spent_val = encode_nullifier_value(b's', now_ms_u64());
@@ -571,7 +647,7 @@ async fn infer_canonical(
         }
         Err(e) => GatewayEnvelopePayload::Err {
             error: ErrorResponse {
-                request_id: Some(req.request_id),
+                request_id: Some(env.request_id),
                 code: e.code.to_string(),
                 message: e.message.to_string(),
             },
@@ -579,9 +655,9 @@ async fn infer_canonical(
     };
 
     let payload_json = serde_json::to_vec(&payload)
-        .map_err(|e| ApiError::internal(Some(req.request_id), format!("serialize: {}", e)))?;
+        .map_err(|_| ApiError::internal(Some(env.request_id), "internal error".into()))?;
 
-    finalize_encrypted_response(&state, &env, payload_json, started, Some(req.request_id)).await
+    finalize_encrypted_response(&state, &env, payload_json, started, Some(env.request_id)).await
 }
 
 async fn finalize_encrypted_response(
@@ -606,8 +682,21 @@ async fn finalize_encrypted_response(
         sleep(Duration::from_millis(delay)).await;
     }
 
+    // Output duplication/provider metadata can exceed the class even after a
+    // bounded upstream read. Return an encrypted categorical error; keep spend state.
+    let payload_json = if payload_json.len() > req_env.token_class.envelope_response_plaintext_bytes() {
+        serde_json::to_vec(&GatewayEnvelopePayload::Err {
+            error: ErrorResponse {
+                request_id: Some(req_env.request_id),
+                code: "response_too_large".into(),
+                message: "response exceeds token class; do not retry automatically".into(),
+            },
+        }).map_err(|_| ApiError::internal(request_id, "internal error".into()))?
+    } else {
+        payload_json
+    };
     let resp_env = seal_response_at_gateway(&state.keypair, req_env, &payload_json)
-        .map_err(|e| ApiError::internal(request_id, format!("encrypt: {}", e)))?;
+        .map_err(|_| ApiError::internal(request_id, "internal error".into()))?;
 
     Ok(Json(resp_env))
 }
@@ -742,7 +831,9 @@ async fn call_provider(
         state.provider_base_url.trim_end_matches('/')
     );
 
-    let mut builder = state.http.post(url).json(&body);
+    let mut builder = state.http.post(url)
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
+        .json(&body);
     if let Some(key) = &state.provider_api_key {
         builder = builder.bearer_auth(key);
     }
@@ -751,29 +842,18 @@ async fn call_provider(
         EncryptedError::upstream(req.request_id, "upstream_network", "upstream network error")
     })?;
 
-    let status = resp.status();
-    let bytes = resp.bytes().await.map_err(|_e| {
-        EncryptedError::upstream(req.request_id, "upstream_read", "upstream read error")
-    })?;
-
-    if !status.is_success() {
-        // Do not pass through upstream body verbatim (may contain sensitive content).
-        warn!(
-            "upstream error status={} request_id={} body_len={}",
-            status,
-            req.request_id,
-            bytes.len()
-        );
+    if !resp.status().is_success() {
+        // Redirects are not followed and provider error bodies are never reflected.
+        warn!("upstream returned non-success status");
         return Err(EncryptedError::upstream(
-            req.request_id,
-            "upstream_error",
-            "upstream returned error",
+            req.request_id, "upstream_error", "upstream error; dispatch outcome may be unknown",
         ));
     }
-
-    let body: Value = serde_json::from_slice(&bytes).map_err(|e| {
-        error!("failed to parse upstream response: {}", e);
-        EncryptedError::upstream(req.request_id, "upstream_parse", "upstream parse error")
+    let bytes = read_bounded_body(resp, req.token_class.envelope_response_plaintext_bytes())
+        .await
+        .map_err(|code| EncryptedError::upstream(req.request_id, code, "upstream response unavailable; do not retry automatically"))?;
+    let body: Value = serde_json::from_slice(&bytes).map_err(|_| {
+        EncryptedError::upstream(req.request_id, "upstream_parse", "invalid upstream JSON")
     })?;
 
     Ok(ProviderChatCompletionResult {
@@ -821,6 +901,7 @@ fn extract_provider_output(body: &Value) -> String {
     }
 }
 
+#[cfg(test)]
 fn decode_nullifier_value(v: &[u8]) -> Option<(u8, u64)> {
     if v.len() != 9 {
         return None;
@@ -835,38 +916,18 @@ fn reserve_nullifier(
     db: &sled::Db,
     rkey: &[u8],
     pending_val: &[u8],
-    pending_ttl_ms: u64,
+    _pending_ttl_ms: u64,
 ) -> std::result::Result<(), ReserveError> {
-    // Fast path: reserve if absent.
+    // Any existing record, including legacy pending/unknown/malformed state,
+    // refuses replay. Time passage alone cannot establish non-execution.
     let cas = db
         .compare_and_swap(rkey, None as Option<&[u8]>, Some(pending_val))
         .map_err(|_| ReserveError::Db)?;
-    if cas.is_ok() {
-        db.flush().map_err(|_| ReserveError::Db)?;
-        return Ok(());
+    if cas.is_err() {
+        return Err(ReserveError::AlreadyUsed);
     }
-
-    // Slow path: check if existing reservation is stale pending.
-    let existing = db.get(rkey).map_err(|_| ReserveError::Db)?;
-    if let Some(val) = existing {
-        if let Some((status, ts)) = decode_nullifier_value(val.as_ref()) {
-            if status == b'p' {
-                let now = now_ms_u64();
-                if now.saturating_sub(ts) > pending_ttl_ms {
-                    // Replace the exact stale value in a single CAS to avoid a clear-then-set race.
-                    let cas2 = db
-                        .compare_and_swap(rkey, Some(val.as_ref()), Some(pending_val))
-                        .map_err(|_| ReserveError::Db)?;
-                    if cas2.is_ok() {
-                        db.flush().map_err(|_| ReserveError::Db)?;
-                        return Ok(());
-                    }
-                }
-            }
-        }
-    }
-
-    Err(ReserveError::AlreadyUsed)
+    db.flush().map_err(|_| ReserveError::Db)?;
+    Ok(())
 }
 
 fn mark_nullifier_spent(
@@ -882,20 +943,6 @@ fn mark_nullifier_spent(
         return Err(ReserveError::Db);
     }
     db.flush().map_err(|_| ReserveError::Db)?;
-    Ok(())
-}
-
-fn release_pending_nullifier(
-    db: &sled::Db,
-    rkey: &[u8],
-    pending_val: &[u8],
-) -> std::result::Result<(), ReserveError> {
-    let cas = db
-        .compare_and_swap(rkey, Some(pending_val), None as Option<&[u8]>)
-        .map_err(|_| ReserveError::Db)?;
-    if cas.is_ok() {
-        db.flush().map_err(|_| ReserveError::Db)?;
-    }
     Ok(())
 }
 
@@ -955,20 +1002,21 @@ mod tests {
     }
 
     #[test]
-    fn reserve_nullifier_replaces_stale_pending_with_single_cas() {
+    fn reserve_nullifier_never_expires_ambiguous_pending() {
         let db = temporary_db();
         let key = b"nullifier";
         let stale = encode_nullifier_value(b'p', 1);
         let fresh = encode_nullifier_value(b'p', 10_000);
-        db.insert(key, stale).expect("seed stale");
+        db.insert(key, stale.clone()).expect("seed stale");
         db.flush().expect("flush seed");
 
-        reserve_nullifier(&db, key, &fresh, 10).expect("stale pending should be replaced");
+        let error = reserve_nullifier(&db, key, &fresh, 10).expect_err("stale pending must refuse");
+        assert!(matches!(error, ReserveError::AlreadyUsed));
 
         let stored = db.get(key).expect("read value").expect("value exists");
         assert_eq!(
             decode_nullifier_value(stored.as_ref()),
-            decode_nullifier_value(&fresh)
+            decode_nullifier_value(&stale)
         );
     }
 }

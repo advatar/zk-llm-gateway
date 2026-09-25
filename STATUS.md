@@ -1,5 +1,30 @@
 # Status
 
+## KCF-08 continuation — 2026-09-25
+
+- [implemented; uncompiled here] Default-off compatibility routes, restricted to explicit isolated dummy-verifier demos.
+- [implemented; uncompiled here] Exact HTTP envelope/request identity, size and option checks before verifier/provider I/O.
+- [implemented; uncompiled here] Conservative non-expiring replay reservations; no release on ambiguous provider errors.
+- [implemented; uncompiled here] Fixed-destination provider client, bounded response reads and encrypted overflow/parser errors.
+- [authored; NOT RUN] 17 native HTTP-boundary tests; existing stale-pending test now requires refusal.
+- [passed locally] 79 focused companion Python tests; two qualifier boundary tests; documentation YAML parsing.
+- [blocked] Cargo/rustfmt/workspace and native Python-Rust qualification remain unavailable; zero native cases, qualified=false.
+
+See `docs/kcf/ADMISSION_HARDENING.md`. This continuation changes production handler source, unlike the historical first slice below. PR #15 stays draft; no deployment, main/pin change or CI dispatch. Dynamic readiness, full regression, distributed recovery and the rest of the roadmap remain open.
+
+## KCF-08: Python envelope-v2 interoperability — first slice, 2026-09-25
+
+- [completed] Reconfirm that the current gateway requires v2 while Python main emits v1.
+- [completed] Add an offline bridge using the actual Rust common crate and a Python qualification runner.
+- [completed] Add two passing Python tests of fail-closed missing-tool/source behavior.
+- [blocked] Native compilation and 34-case conformance: Cargo unavailable in the implementation container. Zero native cases executed; qualified=false.
+- [pending] Compatibility-route confinement, readiness, recovery and remaining gateway #13 scope.
+- [pending] Full current-main regression and all-SDK qualification.
+
+See `docs/kcf/PYTHON_V2_CONFORMANCE.md` and Python SDK draft PR #2. No production
+handler was changed by this first slice. No CI, model, hardware, deployment or
+patient-data run was started. Existing historical verification below is unchanged.
+
 ## Active Task: Publish the ZeroK visual system guide
 
 - [completed] Add a prominent README link to the canonical visual PDF in `advatar/ZeroK`.
