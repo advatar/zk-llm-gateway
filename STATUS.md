@@ -169,3 +169,8 @@ Full commands, immutable source/image evidence and limitations:
 [qualification record](https://github.com/advatar/ZeroK/blob/refactor/thin-inference-facade/docs/INFERENCE_BOUNDARY_QUALIFICATION.md).
 No deployment/merge or production-finality/attestation claim. Compromised-node rebuild,
 credential rotation and new identity enrollment remain ZeroK #59; Apple work untouched.
+
+Delivery: [PR #22](https://github.com/advatar/zk-llm-gateway/pull/22) supersedes
+#18 preserving history; paired [ZeroK #60](https://github.com/advatar/ZeroK/pull/60).
+Draft for human review; no gateway CI checks reported (NOT_RUN, not PASS). #16
+stays open pending review/merge; #17 remains closed. Disposable stack/keys removed.
