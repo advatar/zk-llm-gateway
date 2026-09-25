@@ -1,5 +1,18 @@
 # Status
 
+## KCF-08: Python envelope-v2 interoperability — first slice, 2026-09-25
+
+- [completed] Reconfirm that the current gateway requires v2 while Python main emits v1.
+- [completed] Add an offline bridge using the actual Rust common crate and a Python qualification runner.
+- [completed] Add two passing Python tests of fail-closed missing-tool/source behavior.
+- [blocked] Native compilation and 34-case conformance: Cargo unavailable in the implementation container. Zero native cases executed; qualified=false.
+- [pending] Compatibility-route confinement, readiness, recovery and remaining gateway #13 scope.
+- [pending] Full current-main regression and all-SDK qualification.
+
+See `docs/kcf/PYTHON_V2_CONFORMANCE.md` and Python SDK draft PR #2. No production
+handler was changed by this first slice. No CI, model, hardware, deployment or
+patient-data run was started. Existing historical verification below is unchanged.
+
 ## Active Task: Publish the ZeroK visual system guide
 
 - [completed] Add a prominent README link to the canonical visual PDF in `advatar/ZeroK`.
