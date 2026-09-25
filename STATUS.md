@@ -141,3 +141,31 @@ Add a reference-client example for the maintained ZeroK local paid smoke using
 common envelope/commitment code and existing Actum dev tickets. Prove same-ticket
 second-use refusal plus local negative bindings, without changing replay policy.
 #13/#15 security implementation remains separate/unmerged; no SDK pin changes.
+
+## 2026-09-25 — final local inference-boundary qualification
+
+Supersedes the historical stop above: compromised historical deployment is retired;
+no host/configuration/credential access occurred. **INFERENCE_BOUNDARY_CLEANUP_QUALIFIED**
+for source ownership and local integration, not production assurance or merge approval.
+**ZERO_K_LLM_API_COMPATIBILITY_RETAINED**, **LEGACY_SURFACES_ISOLATED**,
+**REFERENCE_CLIENT_POLICY_BOUNDARY_ACCEPTABLE**. ZeroK #54/#55/#56 and gateway #16.
+
+Frozen paired heads: ZeroK `54a78ce82d7c03f9e02ac0c4da21d0c604d64ef2`,
+gateway `ea652fe3517ddff601e7b6d0af3262bf063aeb4b`. Gateway production code, SDK
+pins, ActiveChain and VIR unchanged. ZeroK facade minimized; voice auth preserved;
+JobQueue actual configurable source contract tested; no direct caller migration.
+Gateway #13/#15 remains the separate security/sunset dependency; #17 stays closed.
+
+Final local smoke 13/13, paid encrypted/Actum/VIR/same-ticket replay/binding negatives/
+verifier outage and both caller seams PASS; exactly one VIR execution in paid sequence.
+Web verify PASS; facade 14, voice 4, structure 2 tests PASS; JobQueue contract PASS;
+five Compose configs and Helm base/staging/production rendering PASS. Gateway fmt
+PASS and workspace 31 tests PASS; strict Clippy FAILURE (16 unchanged baseline
+diagnostics, gateway #21). Changed containers built, startup dummy guards PASS.
+SECRET_SCAN_PASS after placeholder triage. npm security gate not clean (#33);
+SDK_REMOTE_REPRODUCIBILITY_BLOCKED (#13), SDK tests not run. CI recorded on delivery PRs.
+
+Full commands, immutable source/image evidence and limitations:
+[qualification record](https://github.com/advatar/ZeroK/blob/refactor/thin-inference-facade/docs/INFERENCE_BOUNDARY_QUALIFICATION.md).
+No deployment/merge or production-finality/attestation claim. Compromised-node rebuild,
+credential rotation and new identity enrollment remain ZeroK #59; Apple work untouched.
