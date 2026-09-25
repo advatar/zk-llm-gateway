@@ -1,0 +1,15 @@
+# Source ownership; optional reference-client policy is not a server dependency.
+protocol:
+  common: [envelopes, token_classes, padding, request_commitments, verifier_contract]
+  gateway:
+    dependencies: [common, verifier_halo2]
+    endpoints: [/healthz, /v1/pubkey, /v1/models, /v1/chat/completions, /v1/infer]
+    authority: {authorization: ActiveChain_Actum, inference_evidence: VIR}
+  relay: {dependencies: [common], endpoints: [/healthz, /relay, /docs, /openapi.json]}
+reference_client:
+  dependencies: [common]
+  optional_policy: [sessions, memory, retrieval, summaries, redaction, http_api, repl]
+local_qualification:
+  example: client/examples/local_paid_smoke.rs
+  requires: [loopback_gateway, local_Actum_fixture, local_VIR_receipt_store]
+  production_finality: false

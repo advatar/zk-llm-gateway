@@ -97,3 +97,80 @@
 - [completed] Run `swift test` in `zk-llm-gateway-swift-sdk` and commit the scoped SDK fix.
   - Verification:
     - `swift test` in `zk-llm-gateway-swift-sdk` passed 14 tests.
+
+## 2026-09-25 — product-neutral boundary evaluation
+
+Issues #16/#17; documentation PR #18. Reviewed/tested code candidate
+`201feba722f9190c8685faa1473731627a47e8ac`, based on main
+`e4b31b449211906f31f1d529c4257388627ba5aa`; subsequent changes are documentation only.
+
+- **REFERENCE_CLIENT_POLICY_BOUNDARY_ACCEPTABLE**: server/common/relay do not
+  depend on `client`; memory/RAG/session/summary remain optional reference policy,
+  redaction remains local privacy support. No extraction/refactor needed.
+- **PRODUCT_COUPLING = 0** for reviewed production server dependencies; historical
+  domain separators, local fixtures, test audiences and relay documentation
+  examples retained. Runtime/API/Actum/VIR/SDK pins unchanged.
+- Added [module/SDK inventory](docs/REFERENCE_CLIENT_BOUNDARY.md) and independent
+  application example; explicitly distinguish unauthenticated gateway compatibility
+  route from product auth and protected authorization.
+- `cargo test --workspace`: **29 passed**, 0 failed, 0 ignored (client 5,
+  common 11, envelope integration 4, gateway 9; other targets/doc-tests 0).
+  Default nightly reported existing unused workspace dependencies (`http`,
+  `hyper`, `tower`) and common `bytes` dependency warnings.
+- Default `cargo fmt --all -- --check` could not run because nightly rustfmt was
+  absent. `cargo +1.97.1 fmt --all -- --check` **passed** using installed tooling.
+  Clippy/SDK suites not run: no production/protocol/SDK source changed.
+- Fresh SDK initialization failed: Python remote did not serve pinned
+  `20d08bb7af1853db4d6c31067750025c0909672c`. Exact pins were recovered for
+  inspection from the original local object stores; pointers unchanged. Remote
+  reproducibility remains unresolved and belongs with #13's SDK qualification.
+- **INFERENCE_BOUNDARY_CLEANUP_BLOCKED** overall: ZeroK #55 has an unknown
+  JobQueue caller and ai-caller authentication migration boundary. No combined
+  stack/paid/replay/VIR qualification was run. No production assurance, deployment,
+  merge or SDK interoperability improvement is claimed.
+- Existing #13 / PR #15 security-conformance work is separate and unmerged;
+  this evaluation does not supersede or duplicate it.
+- Changed-document relative links and `git diff --check` passed. `detect-secrets`
+  found only the existing README `CLIENT_HTTP_API_KEY` placeholder (`change-me`),
+  manually confirmed as an example, not a credential; no credential finding
+  remains. No gateway CI checks were reported on foundation PR #18.
+
+## 2026-09-25 — local qualification continuation in progress
+
+Add a reference-client example for the maintained ZeroK local paid smoke using
+common envelope/commitment code and existing Actum dev tickets. Prove same-ticket
+second-use refusal plus local negative bindings, without changing replay policy.
+#13/#15 security implementation remains separate/unmerged; no SDK pin changes.
+
+## 2026-09-25 — final local inference-boundary qualification
+
+Supersedes the historical stop above: compromised historical deployment is retired;
+no host/configuration/credential access occurred. **INFERENCE_BOUNDARY_CLEANUP_QUALIFIED**
+for source ownership and local integration, not production assurance or merge approval.
+**ZERO_K_LLM_API_COMPATIBILITY_RETAINED**, **LEGACY_SURFACES_ISOLATED**,
+**REFERENCE_CLIENT_POLICY_BOUNDARY_ACCEPTABLE**. ZeroK #54/#55/#56 and gateway #16.
+
+Frozen paired heads: ZeroK `54a78ce82d7c03f9e02ac0c4da21d0c604d64ef2`,
+gateway `ea652fe3517ddff601e7b6d0af3262bf063aeb4b`. Gateway production code, SDK
+pins, ActiveChain and VIR unchanged. ZeroK facade minimized; voice auth preserved;
+JobQueue actual configurable source contract tested; no direct caller migration.
+Gateway #13/#15 remains the separate security/sunset dependency; #17 stays closed.
+
+Final local smoke 13/13, paid encrypted/Actum/VIR/same-ticket replay/binding negatives/
+verifier outage and both caller seams PASS; exactly one VIR execution in paid sequence.
+Web verify PASS; facade 14, voice 4, structure 2 tests PASS; JobQueue contract PASS;
+five Compose configs and Helm base/staging/production rendering PASS. Gateway fmt
+PASS and workspace 31 tests PASS; strict Clippy FAILURE (16 unchanged baseline
+diagnostics, gateway #21). Changed containers built, startup dummy guards PASS.
+SECRET_SCAN_PASS after placeholder triage. npm security gate not clean (#33);
+SDK_REMOTE_REPRODUCIBILITY_BLOCKED (#13), SDK tests not run. CI recorded on delivery PRs.
+
+Full commands, immutable source/image evidence and limitations:
+[qualification record](https://github.com/advatar/ZeroK/blob/refactor/thin-inference-facade/docs/INFERENCE_BOUNDARY_QUALIFICATION.md).
+No deployment/merge or production-finality/attestation claim. Compromised-node rebuild,
+credential rotation and new identity enrollment remain ZeroK #59; Apple work untouched.
+
+Delivery: [PR #22](https://github.com/advatar/zk-llm-gateway/pull/22) supersedes
+#18 preserving history; paired [ZeroK #60](https://github.com/advatar/ZeroK/pull/60).
+Draft for human review; no gateway CI checks reported (NOT_RUN, not PASS). #16
+stays open pending review/merge; #17 remains closed. Disposable stack/keys removed.

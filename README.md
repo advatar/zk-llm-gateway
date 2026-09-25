@@ -1,7 +1,8 @@
 # ZK LLM Gateway (Rust)
 
-This is a Rust workspace that scaffolds a **privacy-preserving API gateway** for LLM inference,
-with a client designed for the **long-running personal agent** use case.
+`zk-llm-gateway` is a reusable inference security boundary. Products, including
+ZeroK, consume its API/SDKs without making their account or context systems part
+of the protocol. The workspace also includes an optional reference personal-agent client.
 
 It implements the *plumbing* needed for a "ZK API usage credits"-style system:
 
@@ -24,6 +25,48 @@ It implements the *plumbing* needed for a "ZK API usage credits"-style system:
 > verifier** (dev only) and a legacy **Halo2 verifier skeleton**; neither is a production payment
 > authority.
 
+## Repository boundary
+
+`zk-llm-gateway` is a **product-neutral confidential/verifiable inference edge**. Products such as ZeroK consume its SDK/API; the gateway protocol does not depend on ZeroK product semantics.
+
+Ownership is intentionally split:
+
+- **this repository:** encrypted envelopes, gateway encryption/decryption, privacy relay, token-class/padding protocol, replay/nullifier enforcement, Actum verifier adapter and protocol SDKs;
+- **ZeroK:** product/UI, account experience, platform composition/deployment, voice/product integration and compatibility facades;
+- **ActiveChain / Actum:** canonical payment/finality authorization;
+- **VIR:** inference receipt/attestation;
+- **consumer/context layer:** long-lived personal context, semantic memory and agent policy.
+
+The `client/` REPL, session file, local memory, retrieval, redaction and summarization are a **reference client** demonstrating local-first selective disclosure. They are useful conveniences, but they are not required by the gateway wire protocol and should not become a dependency of the server-side security boundary.
+
+The current `ACTIVECHAIN-ZEROK-...` domain separation and ZeroK-local development fixtures are protocol/history compatibility surfaces. This documentation cleanup does not rename or weaken them.
+
+## Independent application consumption
+
+An application can use a protocol SDK and gateway endpoint without ZeroK accounts,
+UI, LiveKit, databases or deployment stack:
+
+```text
+application -> SDK -> optional relay -> gateway /v1/infer
+                                         |-- Actum: exact-request authorization
+                                         +-- VIR/provider: execution and evidence
+```
+
+The application selects bounded context and a model, obtains evidence bound to
+that exact request under its configured merchant audience, and uses the SDK to
+construct/decrypt envelopes. The deployment selects the Actum verifier and
+VIR/provider assurance policy; no upstream memory system is required.
+
+For an intentionally non-paid compatibility call, a trusted server-side product
+proxy can instead send OpenAI messages to `/v1/chat/completions`. That route does
+**not** enforce incoming bearer authentication, encrypted envelopes, Actum
+payment authorization or replay protection. Keep it behind the application's
+explicit authentication/ingress boundary. Do not use it as a fallback after a
+protected request fails. Gateway provider credentials are deployment-side secrets.
+
+See the [reference-client evaluation](docs/REFERENCE_CLIENT_BOUNDARY.md) for module
+classification, SDK pins, dependency evidence and the fresh-clone SDK limitation.
+
 ## Visual system guide
 
 The [ZeroK + `zk-llm-gateway` visual guide](https://github.com/advatar/ZeroK/blob/main/output/pdf/zerok-zk-llm-gateway-visual-guide.pdf)
@@ -39,7 +82,7 @@ trust boundaries.
 - `common/` — shared types (envelopes, token classes, request/response structs, ZK ticket types)
 - `gateway/` — the LLM gateway (decrypts envelope, verifies ticket, checks replay, forwards to provider)
 - `relay/` — optional privacy relay (forwards encrypted envelopes; gateway sees relay IP, not client IP)
-- `client/` — CLI that stores history locally and sends only minimized context
+- `client/` — reference CLI that stores history locally and sends only minimized context; its personal-agent memory/RAG/session features are not gateway protocol requirements
 - `zk-llm-gateway-*-sdk/` — language SDKs tracked as Git submodules
 
 ---
@@ -311,3 +354,9 @@ export LOCAL_SUMMARIZER_MODEL="llama-3.1-8b"
 3. Add better **local summarization** / **RAG** in the client (local model)
 4. Add padding strategies for inference metadata (token budget classes, optional minimum response times)
 5. Consider TEEs/confidential inference if you want to reduce trust in gateway/provider infrastructure
+
+## Local qualification
+
+The [paid-path qualification example](docs/LOCAL_QUALIFICATION.md) exercises local
+Actum binding, encrypted response handling, VIR receipt verification and same-ticket
+replay refusal. It is development-only and independent of reference memory policy.
